@@ -13,15 +13,33 @@ class Database:
         self.bannedList = self.db.bannedList
         self.videos = self.db.videos
 
-    def new_user(self, id):
-        return dict(
-            id=id,
+    def new_user(self, id, name: str = None, username: str = None):
+        doc = dict(
+            id=int(id),
             join_date=datetime.date.today().isoformat()
         )
+        if name:
+            doc["name"] = str(name).strip()
+        if username:
+            doc["username"] = str(username).strip().lstrip("@")
+        return doc
 
-    async def add_user(self, id):
-        user = self.new_user(id)
-        await self.col.insert_one(user)
+    async def add_user(self, id, name: str = None, username: str = None):
+        user = self.new_user(id, name=name, username=username)
+        await self.col.update_one(
+            {"id": int(id)},
+            {"$setOnInsert": {"join_date": user["join_date"]}, "$set": {k: v for k, v in user.items() if k != "join_date"}},
+            upsert=True,
+        )
+
+    async def update_user_profile(self, id, name: str = None, username: str = None):
+        updates = {}
+        if name is not None and str(name).strip():
+            updates["name"] = str(name).strip()
+        if username is not None:
+            updates["username"] = str(username).strip().lstrip("@")
+        if updates:
+            await self.col.update_one({"id": int(id)}, {"$set": updates})
         
     async def add_user_pass(self, id, ag_pass):
         await self.add_user(int(id))
@@ -159,12 +177,17 @@ class Database:
     ):
         query = {}
         if query_text and query_text.strip():
-            q = query_text.strip()
+            q = query_text.strip().lstrip("@")
+            safe_q = re.escape(q)
+            pattern = {"$regex": safe_q, "$options": "i"}
+            or_clauses = [
+                {"name": pattern},
+                {"username": pattern},
+                {"join_date": pattern},
+            ]
             if q.isdigit():
-                query["id"] = int(q)
-            else:
-                safe_q = re.escape(q)
-                query["join_date"] = {"$regex": safe_q, "$options": "i"}
+                or_clauses.append({"id": int(q)})
+            query["$or"] = or_clauses
         max_items = max(1, min(int(limit), 100))
         offset = max(0, int(skip))
         cursor = (

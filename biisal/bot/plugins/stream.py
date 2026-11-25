@@ -81,12 +81,16 @@ Open <b>MRDb</b> → <b>About</b> → <b>Stream</b>, paste this code, and tap <b
 
 @StreamBot.on_message((filters.private) & (filters.document | filters.video | filters.audio | filters.photo) , group=4)
 async def private_receive_handler(c: Client, m: Message):
+    full_name = " ".join(p for p in [m.from_user.first_name, m.from_user.last_name] if p).strip()
+    uname = m.from_user.username or ""
     if not await db.is_user_exist(m.from_user.id):
-        await db.add_user(m.from_user.id)
+        await db.add_user(m.from_user.id, name=full_name, username=uname)
         await c.send_message(
             Var.BIN_CHANNEL,
             f"New User Joined! : \n\n Name : [{m.from_user.first_name}](tg://user?id={m.from_user.id}) Started Your Bot!!"
         )
+    else:
+        await db.update_user_profile(m.from_user.id, name=full_name, username=uname)
     if Var.UPDATES_CHANNEL != "None":
         try:
             user = await c.get_chat_member(Var.UPDATES_CHANNEL, m.chat.id)

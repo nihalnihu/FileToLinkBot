@@ -213,9 +213,40 @@ async def admin_users_handler(request: web.Request):
             _video_db.get_banned_ids(),
             _video_db.total_users_count(),
         )
+
+        # Backfill missing Telegram name/username for users in this page
+        missing_ids = [
+            int(r["id"])
+            for r in rows
+            if r.get("id") is not None and not r.get("name")
+        ]
+        if missing_ids:
+            try:
+                tg_users = await StreamBot.get_users(missing_ids)
+                if not isinstance(tg_users, list):
+                    tg_users = [tg_users]
+                tg_map = {int(u.id): u for u in tg_users if getattr(u, "id", None)}
+                for r in rows:
+                    uid = int(r["id"]) if r.get("id") is not None else None
+                    tg_u = tg_map.get(uid)
+                    if tg_u is not None:
+                        full_name = " ".join(
+                            p for p in [getattr(tg_u, "first_name", None), getattr(tg_u, "last_name", None)] if p
+                        ).strip()
+                        uname = (getattr(tg_u, "username", None) or "").strip()
+                        if full_name:
+                            r["name"] = full_name
+                        if uname:
+                            r["username"] = uname
+                        await _video_db.update_user_profile(uid, name=full_name or None, username=uname)
+            except Exception as profile_err:
+                logging.debug(f"Could not backfill Telegram user profiles: {profile_err}")
+
         items = [
             {
                 "id": int(r["id"]),
+                "name": r.get("name") or "",
+                "username": r.get("username") or "",
                 "join_date": r.get("join_date") or "",
                 "is_banned": int(r["id"]) in banned_ids,
             }
@@ -263,6 +294,32 @@ async def admin_unban_user_handler(request: web.Request):
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+_broadcast_jobs = {}
+
+
+async def _run_broadcast_job(job_id: str, text: str, user_ids: list):
+    job = _broadcast_jobs[job_id]
+    sem = asyncio.Semaphore(8)
+
+    async def _send_one(uid: int):
+        async with sem:
+            try:
+                await StreamBot.send_message(chat_id=uid, text=text)
+                job["sent"] += 1
+            except FloodWait as fw:
+                await asyncio.sleep(min(int(fw.value), 30))
+                try:
+                    await StreamBot.send_message(chat_id=uid, text=text)
+                    job["sent"] += 1
+                except Exception:
+                    job["failed"] += 1
+            except Exception:
+                job["failed"] += 1
+
+    await asyncio.gather(*(_send_one(uid) for uid in user_ids))
+    job["done"] = True
+
+
 @routes.post("/api/admin/broadcast")
 async def admin_broadcast_handler(request: web.Request):
     if not _is_owner_request(request):
@@ -274,32 +331,47 @@ async def admin_broadcast_handler(request: web.Request):
             return web.json_response({"ok": False, "error": "Message cannot be empty"}, status=400)
 
         users_cursor = await _video_db.get_all_users()
-        total = 0
-        sent = 0
-        failed = 0
+        user_ids = []
         async for user in users_cursor:
             uid = user.get("id")
-            if uid is None:
-                continue
-            total += 1
-            try:
-                await StreamBot.send_message(chat_id=int(uid), text=text)
-                sent += 1
-            except FloodWait as fw:
-                await asyncio.sleep(min(int(fw.value), 30))
-                try:
-                    await StreamBot.send_message(chat_id=int(uid), text=text)
-                    sent += 1
-                except Exception:
-                    failed += 1
-            except Exception:
-                failed += 1
+            if uid is not None:
+                user_ids.append(int(uid))
+
+        job_id = secrets.token_hex(6)
+        _broadcast_jobs[job_id] = {
+            "total": len(user_ids),
+            "sent": 0,
+            "failed": 0,
+            "done": len(user_ids) == 0,
+        }
+        if user_ids:
+            asyncio.create_task(_run_broadcast_job(job_id, text, user_ids))
+
         return web.json_response(
-            {"ok": True, "total": total, "sent": sent, "failed": failed}
+            {
+                "ok": True,
+                "started": True,
+                "job_id": job_id,
+                "total": len(user_ids),
+                "sent": 0,
+                "failed": 0,
+                "done": len(user_ids) == 0,
+            }
         )
     except Exception as e:
         logging.critical(e.with_traceback(None))
         return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.get(r"/api/admin/broadcast/{job_id:\S+}", allow_head=True)
+async def admin_broadcast_status_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    job_id = request.match_info.get("job_id", "").strip()
+    job = _broadcast_jobs.get(job_id)
+    if not job:
+        return web.json_response({"ok": False, "error": "Broadcast job not found"}, status=404)
+    return web.json_response({"ok": True, "job_id": job_id, **job})
 
 
 @routes.get(r"/watch/{path:\S+}", allow_head=True)

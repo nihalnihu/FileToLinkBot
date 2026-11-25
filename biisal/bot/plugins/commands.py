@@ -25,12 +25,16 @@ I ᴀᴍ ᴀᴅᴠᴀɴᴄᴇ ғɪʟᴇ ᴛᴏ Lɪɴᴋ Gᴇɴᴇʀᴀᴛᴏʀ B
 
 @StreamBot.on_message(filters.command("start") & filters.private )
 async def start(b, m):
+    full_name = " ".join(p for p in [m.from_user.first_name, m.from_user.last_name] if p).strip()
+    uname = m.from_user.username or ""
     if not await db.is_user_exist(m.from_user.id):
-        await db.add_user(m.from_user.id)
+        await db.add_user(m.from_user.id, name=full_name, username=uname)
         await b.send_message(
             Var.NEW_USER_LOG,
             f"**Nᴇᴡ Usᴇʀ Jᴏɪɴᴇᴅ:** \n\n__Mʏ Nᴇᴡ Fʀɪᴇɴᴅ__ [{m.from_user.first_name}](tg://user?id={m.from_user.id}) __Sᴛᴀʀᴛᴇᴅ Yᴏᴜʀ Bᴏᴛ !!__"
         )
+    else:
+        await db.update_user_profile(m.from_user.id, name=full_name, username=uname)
     if Var.UPDATES_CHANNEL != "None":
         try:
             user = await b.get_chat_member(Var.UPDATES_CHANNEL, m.chat.id)
