@@ -73,7 +73,69 @@ def _format_video_row(row: dict, base_url: str) -> dict:
         "created_at": row.get("created_at"),
         "stream_url": f"{base_url}{msg_id}/{quoted_name}?hash={secure_hash}",
         "watch_url": f"{base_url}watch/{msg_id}/{quoted_name}?hash={secure_hash}",
+        "thumb_url": f"{base_url}api/thumb/{msg_id}" if msg_id is not None else None,
     }
+
+
+_thumb_cache = {}
+
+
+@routes.get(r"/api/thumb/{id:\d+}", allow_head=True)
+@routes.get(r"/api/thumb/{id:\d+}.jpg", allow_head=True)
+@routes.get(r"/{id:\d+}/thumb.jpg", allow_head=True)
+async def get_thumbnail_handler(request: web.Request):
+    msg_id = int(request.match_info["id"])
+    if msg_id in _thumb_cache:
+        return web.Response(
+            body=_thumb_cache[msg_id],
+            content_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=604800, immutable"},
+        )
+    try:
+        index = min(work_loads, key=work_loads.get)
+        faster_client = multi_clients[index]
+        message = await faster_client.get_messages(Var.BIN_CHANNEL, msg_id)
+        if not message or message.empty:
+            return web.Response(status=404, text="Message not found")
+
+        media = (
+            getattr(message, "video", None)
+            or getattr(message, "document", None)
+            or getattr(message, "photo", None)
+            or getattr(message, "animation", None)
+        )
+        if not media:
+            return web.Response(status=404, text="No media in message")
+
+        thumb_file_id = None
+        thumbs = getattr(media, "thumbs", None)
+        if thumbs:
+            thumb_file_id = thumbs[-1].file_id
+        elif getattr(media, "thumb", None):
+            thumb_file_id = media.thumb.file_id
+        elif hasattr(media, "file_id") and getattr(message, "photo", None):
+            thumb_file_id = media.file_id
+
+        if not thumb_file_id:
+            return web.Response(status=404, text="No thumbnail found for media")
+
+        buf = await faster_client.download_media(thumb_file_id, in_memory=True)
+        if not buf:
+            return web.Response(status=404, text="Failed to download thumbnail")
+
+        bytes_data = buf.getvalue() if hasattr(buf, "getvalue") else bytes(buf)
+        if len(_thumb_cache) > 500:
+            _thumb_cache.clear()
+        _thumb_cache[msg_id] = bytes_data
+
+        return web.Response(
+            body=bytes_data,
+            content_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=604800, immutable"},
+        )
+    except Exception as e:
+        logging.error(f"Thumbnail error for {msg_id}: {e}")
+        return web.Response(status=500, text=str(e))
 
 
 @routes.get("/api/videos", allow_head=True)
