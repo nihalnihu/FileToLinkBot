@@ -10,6 +10,7 @@ from pyrogram import filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant
 from biisal.utils.file_properties import get_name, get_hash, get_media_file_size
+from biisal.utils.firebase_config import get_mrdb_download_url
 db = Database(Var.DATABASE_URL, Var.name)
 from pyrogram.types import ReplyKeyboardMarkup
 from biisal.vars import bot_name , mv_rockers , movie_laab
@@ -64,31 +65,30 @@ async def start(b, m):
                 
                 disable_web_page_preview=True)
             return
-    await StreamBot.send_photo(
-    chat_id=m.chat.id,
-    photo="https://telegra.ph/file/c0da896e59beb1c30f585.jpg",
-    caption= SRT_TXT.format(m.from_user.mention(style="md")),
-    reply_markup=InlineKeyboardMarkup(
+    app_download_url = await get_mrdb_download_url()
+    start_buttons = [
         [
-        
-            [
-                 InlineKeyboardButton("ᴀʙᴏᴜᴛ ✍︎", callback_data="about"),
-                 InlineKeyboardButton("ʜᴇʟᴘ ⌫", callback_data="help")
-            ],
-
-            [
-            
-                 InlineKeyboardButton("ᴅᴇᴠᴏʟᴏᴘᴇʀ ✰", callback_data="aboutDev"),
-
-                
-                 InlineKeyboardButton("ᴄʜᴀɴɴᴇʟ ⚠︎", url=mv_rockers)
-            
-            ],
-
-            [InlineKeyboardButton("☕ 𝖻𝗎𝗒 𝗆𝖾 𝖺 𝖼𝗈𝖿𝖿𝖾𝖾 ☕", url="https://www.buymeacoffee.com/nihaal")]
-        ]
+            InlineKeyboardButton("ᴀʙᴏᴜᴛ ✍︎", callback_data="about"),
+            InlineKeyboardButton("ʜᴇʟᴘ ⌫", callback_data="help"),
+        ],
+        [
+            InlineKeyboardButton("ᴅᴇᴠᴏʟᴏᴘᴇʀ ✰", callback_data="aboutDev"),
+            InlineKeyboardButton("ᴄʜᴀɴɴᴇʟ ⚠︎", url=mv_rockers),
+        ],
+    ]
+    if app_download_url:
+        start_buttons.append(
+            [InlineKeyboardButton("📱 Download MRDb App", url=app_download_url)]
+        )
+    start_buttons.append(
+        [InlineKeyboardButton("☕ 𝖻𝗎𝗒 𝗆𝖾 𝖺 𝖼𝗈𝖿𝖿𝖾𝖾 ☕", url="https://www.buymeacoffee.com/nihaal")]
     )
-)
+    await StreamBot.send_photo(
+        chat_id=m.chat.id,
+        photo="https://telegra.ph/file/c0da896e59beb1c30f585.jpg",
+        caption=SRT_TXT.format(m.from_user.mention(style="md")),
+        reply_markup=InlineKeyboardMarkup(start_buttons),
+    )
 @StreamBot.on_message(filters.command("help") & filters.private )
 async def help_cd(b, m):
     if not await db.is_user_exist(m.from_user.id):

@@ -8,6 +8,7 @@ import math
 import logging
 import secrets
 import mimetypes
+from urllib.parse import quote_plus
 from aiohttp import web
 from aiohttp.http_exceptions import BadStatusLine
 from biisal.bot import multi_clients, work_loads, StreamBot
@@ -15,11 +16,21 @@ from biisal.server.exceptions import FIleNotFound, InvalidHash
 from biisal import StartTime, __version__
 from ..utils.time_format import get_readable_time
 from ..utils.custom_dl import ByteStreamer
+from ..utils.database import Database
 from biisal.utils.render_template import render_page
 from biisal.vars import Var
 
 
 routes = web.RouteTableDef()
+_video_db = Database(Var.DATABASE_URL, Var.name)
+
+
+def _resolve_base_url(request: web.Request) -> str:
+    if Var.FQDN and Var.FQDN != "BIND_ADRESS:PORT":
+        base = Var.URL
+    else:
+        base = f"{request.scheme}://{request.host}/"
+    return base if base.endswith("/") else f"{base}/"
 
 @routes.get("/", allow_head=True)
 async def root_route_handler(_):
@@ -38,6 +49,72 @@ async def root_route_handler(_):
             "version": __version__,
         }
     )
+
+
+def _format_video_row(row: dict, base_url: str) -> dict:
+    msg_id = row.get("msg_id")
+    secure_hash = row.get("hash") or ""
+    file_name = row.get("file_name") or f"video_{msg_id}.mkv"
+    quoted_name = quote_plus(str(file_name))
+    stream_code = row.get("stream_code") or (
+        f"MRDB-{msg_id}-{secure_hash.upper()}" if msg_id is not None and secure_hash else ""
+    )
+    return {
+        "msg_id": msg_id,
+        "hash": secure_hash,
+        "stream_code": stream_code,
+        "title": row.get("title") or file_name,
+        "file_name": file_name,
+        "file_size": row.get("file_size", 0),
+        "mime_type": row.get("mime_type") or "video/x-matroska",
+        "tmdb_id": row.get("tmdb_id"),
+        "created_at": row.get("created_at"),
+        "stream_url": f"{base_url}{msg_id}/{quoted_name}?hash={secure_hash}",
+        "watch_url": f"{base_url}watch/{msg_id}/{quoted_name}?hash={secure_hash}",
+    }
+
+
+@routes.get("/api/videos", allow_head=True)
+async def list_videos_handler(request: web.Request):
+    try:
+        query_text = request.rel_url.query.get("q")
+        tmdb_raw = request.rel_url.query.get("tmdb_id")
+        tmdb_id = int(tmdb_raw) if tmdb_raw and tmdb_raw.isdigit() else None
+        limit_raw = request.rel_url.query.get("limit", "50")
+        limit = int(limit_raw) if limit_raw.isdigit() else 50
+        rows = await _video_db.get_videos(
+            query_text=query_text,
+            tmdb_id=tmdb_id,
+            limit=limit,
+        )
+        base_url = _resolve_base_url(request)
+
+        items = [
+            _format_video_row(row, base_url)
+            for row in rows
+            if row.get("msg_id") is not None and row.get("hash")
+        ]
+        return web.json_response({"ok": True, "count": len(items), "videos": items})
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.get(r"/api/code/{code:\S+}", allow_head=True)
+async def resolve_code_handler(request: web.Request):
+    try:
+        code = request.match_info.get("code", "").strip()
+        row = await _video_db.get_video_by_code(code)
+        if not row or row.get("msg_id") is None or not row.get("hash"):
+            return web.json_response(
+                {"ok": False, "error": "Invalid or unknown stream code"},
+                status=404,
+            )
+        base_url = _resolve_base_url(request)
+        return web.json_response({"ok": True, "video": _format_video_row(row, base_url)})
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
 @routes.get(r"/watch/{path:\S+}", allow_head=True)
@@ -152,7 +229,11 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
                 file_name = f"{secrets.token_hex(2)}.unknown"
     else:
         if file_name:
-            mime_type = mimetypes.guess_type(file_id.file_name)
+            guessed_mime, _ = mimetypes.guess_type(file_name)
+            if not guessed_mime and file_name.lower().endswith(".mkv"):
+                mime_type = "video/x-matroska"
+            else:
+                mime_type = guessed_mime or "application/octet-stream"
         else:
             mime_type = "application/octet-stream"
             file_name = f"{secrets.token_hex(2)}.unknown"

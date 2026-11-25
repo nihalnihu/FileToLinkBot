@@ -1,0 +1,23 @@
+# Environment & secrets (configured on Koyeb dashboard, never committed)
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pyrogram session files
+*.session
+*.session-journal
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
