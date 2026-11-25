@@ -80,12 +80,19 @@ async def list_videos_handler(request: web.Request):
         query_text = request.rel_url.query.get("q")
         tmdb_raw = request.rel_url.query.get("tmdb_id")
         tmdb_id = int(tmdb_raw) if tmdb_raw and tmdb_raw.isdigit() else None
-        limit_raw = request.rel_url.query.get("limit", "50")
-        limit = int(limit_raw) if limit_raw.isdigit() else 50
+        limit_raw = request.rel_url.query.get("limit", "20")
+        limit = int(limit_raw) if limit_raw.isdigit() else 20
+        offset_raw = (
+            request.rel_url.query.get("offset")
+            or request.rel_url.query.get("skip")
+            or "0"
+        )
+        offset = int(offset_raw) if offset_raw.isdigit() else 0
         rows = await _video_db.get_videos(
             query_text=query_text,
             tmdb_id=tmdb_id,
             limit=limit,
+            skip=offset,
         )
         base_url = _resolve_base_url(request)
 
@@ -94,7 +101,36 @@ async def list_videos_handler(request: web.Request):
             for row in rows
             if row.get("msg_id") is not None and row.get("hash")
         ]
-        return web.json_response({"ok": True, "count": len(items), "videos": items})
+        clamped_limit = max(1, min(limit, 100))
+        return web.json_response(
+            {
+                "ok": True,
+                "count": len(items),
+                "has_more": len(rows) >= clamped_limit,
+                "videos": items,
+            }
+        )
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.delete(r"/api/videos/{identifier:\S+}")
+async def delete_video_handler(request: web.Request):
+    try:
+        identifier = request.match_info.get("identifier", "").strip()
+        if not identifier:
+            return web.json_response({"ok": False, "error": "Missing identifier"}, status=400)
+        msg_id = int(identifier) if identifier.isdigit() else None
+        deleted = await _video_db.delete_video(
+            msg_id=msg_id,
+            stream_code=None if msg_id is not None else identifier,
+        )
+        if not deleted and msg_id is None:
+            row = await _video_db.get_video_by_code(identifier)
+            if row and row.get("msg_id") is not None:
+                deleted = await _video_db.delete_video(msg_id=int(row["msg_id"]))
+        return web.json_response({"ok": True, "deleted": bool(deleted)})
     except Exception as e:
         logging.critical(e.with_traceback(None))
         return web.json_response({"ok": False, "error": str(e)}, status=500)

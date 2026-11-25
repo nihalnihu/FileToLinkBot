@@ -82,7 +82,8 @@ class Database:
         self,
         query_text: str = None,
         tmdb_id: int = None,
-        limit: int = 50,
+        limit: int = 20,
+        skip: int = 0,
     ):
         query = {}
         if tmdb_id is not None:
@@ -96,9 +97,11 @@ class Database:
                 {"stream_code": pattern},
             ]
         max_items = max(1, min(int(limit), 100))
+        offset = max(0, int(skip))
         cursor = (
             self.videos.find(query, {"_id": 0})
             .sort("created_at", -1)
+            .skip(offset)
             .limit(max_items)
         )
         return await cursor.to_list(length=max_items)
@@ -125,9 +128,17 @@ class Database:
             {"_id": 0},
         )
 
-    async def delete_video(self, msg_id: int):
-        res = await self.videos.delete_one({"msg_id": int(msg_id)})
-        return res.deleted_count > 0
+    async def delete_video(self, msg_id: int = None, stream_code: str = None):
+        if msg_id is not None:
+            res = await self.videos.delete_many({"msg_id": int(msg_id)})
+            if res.deleted_count > 0:
+                return True
+        if stream_code:
+            res = await self.videos.delete_many(
+                {"stream_code": stream_code.strip().upper()}
+            )
+            return res.deleted_count > 0
+        return False
     
 
     

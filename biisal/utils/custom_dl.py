@@ -182,42 +182,54 @@ class ByteStreamer:
 
         current_part = 1
         location = await self.get_location(file_id)
+        prefetch_ahead = 3
+        pending_tasks: Dict[int, asyncio.Task] = {}
+
+        def _schedule_part(part_idx: int) -> None:
+            if part_idx > part_count or part_idx in pending_tasks:
+                return
+            part_offset = offset + (part_idx - 1) * chunk_size
+            pending_tasks[part_idx] = asyncio.create_task(
+                media_session.send(
+                    raw.functions.upload.GetFile(
+                        location=location, offset=part_offset, limit=chunk_size
+                    ),
+                )
+            )
 
         try:
-            r = await media_session.send(
-                raw.functions.upload.GetFile(
-                    location=location, offset=offset, limit=chunk_size
-                ),
-            )
-            if isinstance(r, raw.types.upload.File):
-                while True:
-                    chunk = r.bytes
-                    if not chunk:
-                        break
-                    elif part_count == 1:
-                        yield chunk[first_part_cut:last_part_cut]
-                    elif current_part == 1:
-                        yield chunk[first_part_cut:]
-                    elif current_part == part_count:
-                        yield chunk[:last_part_cut]
-                    else:
-                        yield chunk
+            for p in range(1, min(part_count, prefetch_ahead) + 1):
+                _schedule_part(p)
 
-                    current_part += 1
-                    offset += chunk_size
+            while current_part <= part_count:
+                task = pending_tasks.pop(current_part, None)
+                if task is None:
+                    break
+                r = await task
+                _schedule_part(current_part + prefetch_ahead)
 
-                    if current_part > part_count:
-                        break
+                if not isinstance(r, raw.types.upload.File):
+                    break
+                chunk = r.bytes
+                if not chunk:
+                    break
+                elif part_count == 1:
+                    yield chunk[first_part_cut:last_part_cut]
+                elif current_part == 1:
+                    yield chunk[first_part_cut:]
+                elif current_part == part_count:
+                    yield chunk[:last_part_cut]
+                else:
+                    yield chunk
 
-                    r = await media_session.send(
-                        raw.functions.upload.GetFile(
-                            location=location, offset=offset, limit=chunk_size
-                        ),
-                    )
+                current_part += 1
         except (TimeoutError, AttributeError):
             pass
         finally:
-            logging.debug("Finished yielding file with {current_part} parts.")
+            for task in pending_tasks.values():
+                if not task.done():
+                    task.cancel()
+            logging.debug(f"Finished yielding file with {current_part} parts.")
             work_loads[index] -= 1
 
     
