@@ -5,12 +5,14 @@
 import re
 import time
 import math
+import asyncio
 import logging
 import secrets
 import mimetypes
 from urllib.parse import quote_plus
 from aiohttp import web
 from aiohttp.http_exceptions import BadStatusLine
+from pyrogram.errors import FloodWait
 from biisal.bot import multi_clients, work_loads, StreamBot
 from biisal.server.exceptions import FIleNotFound, InvalidHash
 from biisal import StartTime, __version__
@@ -148,6 +150,153 @@ async def resolve_code_handler(request: web.Request):
             )
         base_url = _resolve_base_url(request)
         return web.json_response({"ok": True, "video": _format_video_row(row, base_url)})
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+def _is_owner_request(request: web.Request) -> bool:
+    provided = (request.headers.get("X-Owner-Key") or "").strip()
+    expected = (getattr(Var, "OWNER_ADMIN_KEY", "") or "").strip()
+    return bool(expected and provided == expected)
+
+
+@routes.get("/api/admin/stats", allow_head=True)
+async def admin_stats_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    try:
+        total_users, banned_users, total_videos = await asyncio.gather(
+            _video_db.total_users_count(),
+            _video_db.total_banned_count(),
+            _video_db.total_videos_count(),
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "total_users": total_users,
+                "banned_users": banned_users,
+                "total_videos": total_videos,
+                "uptime": get_readable_time(time.time() - StartTime),
+                "telegram_bot": "@" + StreamBot.username,
+                "connected_bots": len(multi_clients),
+                "loads": dict(
+                    ("bot" + str(c + 1), l)
+                    for c, (_, l) in enumerate(
+                        sorted(work_loads.items(), key=lambda x: x[1], reverse=True)
+                    )
+                ),
+            }
+        )
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.get("/api/admin/users", allow_head=True)
+async def admin_users_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    try:
+        query_text = request.rel_url.query.get("q")
+        limit_raw = request.rel_url.query.get("limit", "30")
+        limit = int(limit_raw) if limit_raw.isdigit() else 30
+        offset_raw = request.rel_url.query.get("offset", "0")
+        offset = int(offset_raw) if offset_raw.isdigit() else 0
+
+        rows, banned_ids, total_users = await asyncio.gather(
+            _video_db.get_users_paginated(
+                query_text=query_text,
+                limit=limit,
+                skip=offset,
+            ),
+            _video_db.get_banned_ids(),
+            _video_db.total_users_count(),
+        )
+        items = [
+            {
+                "id": int(r["id"]),
+                "join_date": r.get("join_date") or "",
+                "is_banned": int(r["id"]) in banned_ids,
+            }
+            for r in rows
+            if r.get("id") is not None
+        ]
+        clamped_limit = max(1, min(limit, 100))
+        return web.json_response(
+            {
+                "ok": True,
+                "total_users": total_users,
+                "count": len(items),
+                "has_more": len(rows) >= clamped_limit,
+                "users": items,
+            }
+        )
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.post(r"/api/admin/users/{user_id:\d+}/ban")
+async def admin_ban_user_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    try:
+        user_id = int(request.match_info["user_id"])
+        banned = await _video_db.ban_user(user_id)
+        return web.json_response({"ok": True, "user_id": user_id, "banned": bool(banned)})
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.delete(r"/api/admin/users/{user_id:\d+}/ban")
+async def admin_unban_user_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    try:
+        user_id = int(request.match_info["user_id"])
+        unbanned = await _video_db.is_unbanned(user_id)
+        return web.json_response({"ok": True, "user_id": user_id, "unbanned": bool(unbanned)})
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.post("/api/admin/broadcast")
+async def admin_broadcast_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    try:
+        payload = await request.json()
+        text = str(payload.get("message") or "").strip()
+        if not text:
+            return web.json_response({"ok": False, "error": "Message cannot be empty"}, status=400)
+
+        users_cursor = await _video_db.get_all_users()
+        total = 0
+        sent = 0
+        failed = 0
+        async for user in users_cursor:
+            uid = user.get("id")
+            if uid is None:
+                continue
+            total += 1
+            try:
+                await StreamBot.send_message(chat_id=int(uid), text=text)
+                sent += 1
+            except FloodWait as fw:
+                await asyncio.sleep(min(int(fw.value), 30))
+                try:
+                    await StreamBot.send_message(chat_id=int(uid), text=text)
+                    sent += 1
+                except Exception:
+                    failed += 1
+            except Exception:
+                failed += 1
+        return web.json_response(
+            {"ok": True, "total": total, "sent": sent, "failed": failed}
+        )
     except Exception as e:
         logging.critical(e.with_traceback(None))
         return web.json_response({"ok": False, "error": str(e)}, status=500)

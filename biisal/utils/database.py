@@ -139,6 +139,41 @@ class Database:
             )
             return res.deleted_count > 0
         return False
+
+    async def total_banned_count(self):
+        return await self.bannedList.count_documents({})
+
+    async def total_videos_count(self):
+        return await self.videos.count_documents({})
+
+    async def get_banned_ids(self):
+        cursor = self.bannedList.find({}, {"banId": 1, "_id": 0})
+        docs = await cursor.to_list(length=5000)
+        return {int(d["banId"]) for d in docs if d.get("banId") is not None}
+
+    async def get_users_paginated(
+        self,
+        query_text: str = None,
+        limit: int = 30,
+        skip: int = 0,
+    ):
+        query = {}
+        if query_text and query_text.strip():
+            q = query_text.strip()
+            if q.isdigit():
+                query["id"] = int(q)
+            else:
+                safe_q = re.escape(q)
+                query["join_date"] = {"$regex": safe_q, "$options": "i"}
+        max_items = max(1, min(int(limit), 100))
+        offset = max(0, int(skip))
+        cursor = (
+            self.col.find(query, {"_id": 0})
+            .sort([("join_date", -1), ("id", -1)])
+            .skip(offset)
+            .limit(max_items)
+        )
+        return await cursor.to_list(length=max_items)
     
 
     
