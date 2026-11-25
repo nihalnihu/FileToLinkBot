@@ -214,34 +214,6 @@ async def admin_users_handler(request: web.Request):
             _video_db.total_users_count(),
         )
 
-        # Backfill missing Telegram name/username for users in this page
-        missing_ids = [
-            int(r["id"])
-            for r in rows
-            if r.get("id") is not None and not r.get("name")
-        ]
-        if missing_ids:
-            try:
-                tg_users = await StreamBot.get_users(missing_ids)
-                if not isinstance(tg_users, list):
-                    tg_users = [tg_users]
-                tg_map = {int(u.id): u for u in tg_users if getattr(u, "id", None)}
-                for r in rows:
-                    uid = int(r["id"]) if r.get("id") is not None else None
-                    tg_u = tg_map.get(uid)
-                    if tg_u is not None:
-                        full_name = " ".join(
-                            p for p in [getattr(tg_u, "first_name", None), getattr(tg_u, "last_name", None)] if p
-                        ).strip()
-                        uname = (getattr(tg_u, "username", None) or "").strip()
-                        if full_name:
-                            r["name"] = full_name
-                        if uname:
-                            r["username"] = uname
-                        await _video_db.update_user_profile(uid, name=full_name or None, username=uname)
-            except Exception as profile_err:
-                logging.debug(f"Could not backfill Telegram user profiles: {profile_err}")
-
         items = [
             {
                 "id": int(r["id"]),
@@ -298,11 +270,11 @@ _broadcast_jobs = {}
 
 
 async def _run_broadcast_job(job_id: str, text: str, user_ids: list):
-    job = _broadcast_jobs[job_id]
-    sem = asyncio.Semaphore(8)
-
-    async def _send_one(uid: int):
-        async with sem:
+    job = _broadcast_jobs.get(job_id)
+    if not job:
+        return
+    try:
+        for uid in user_ids:
             try:
                 await StreamBot.send_message(chat_id=uid, text=text)
                 job["sent"] += 1
@@ -315,9 +287,11 @@ async def _run_broadcast_job(job_id: str, text: str, user_ids: list):
                     job["failed"] += 1
             except Exception:
                 job["failed"] += 1
-
-    await asyncio.gather(*(_send_one(uid) for uid in user_ids))
-    job["done"] = True
+            await asyncio.sleep(0.08)
+    except Exception as e:
+        logging.error(f"Broadcast job {job_id} error: {e}")
+    finally:
+        job["done"] = True
 
 
 @routes.post("/api/admin/broadcast")
