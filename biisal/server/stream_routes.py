@@ -19,6 +19,8 @@ from biisal import StartTime, __version__
 from ..utils.time_format import get_readable_time
 from ..utils.custom_dl import ByteStreamer
 from ..utils.database import Database
+from ..utils.file_properties import get_hash, get_name
+from ..utils.video_thumb import build_local_stream_url, extract_frame_10min
 from biisal.utils.render_template import render_page
 from biisal.vars import Var
 
@@ -78,6 +80,34 @@ def _format_video_row(row: dict, base_url: str) -> dict:
 
 
 _thumb_cache = {}
+_thumb_inflight = {}
+
+
+async def _extract_and_cache_thumb(msg_id: int):
+    row = await _video_db.videos.find_one(
+        {"msg_id": msg_id}, {"_id": 0, "file_name": 1, "hash": 1}
+    )
+    file_name = row.get("file_name") if row else None
+    file_hash = row.get("hash") if row else None
+
+    if not file_hash:
+        index = min(work_loads, key=work_loads.get)
+        faster_client = multi_clients[index]
+        message = await faster_client.get_messages(Var.BIN_CHANNEL, msg_id)
+        if message and not message.empty:
+            file_name = file_name or get_name(message) or f"video_{msg_id}.mkv"
+            file_hash = get_hash(message)
+
+    if not file_hash:
+        return None
+
+    local_url = build_local_stream_url(
+        msg_id, file_name or f"video_{msg_id}.mkv", file_hash
+    )
+    bytes_data = await extract_frame_10min(local_url)
+    if bytes_data:
+        await _video_db.save_thumbnail(msg_id, bytes_data)
+    return bytes_data
 
 
 @routes.get(r"/api/thumb/{id:\d+}", allow_head=True)
@@ -92,38 +122,21 @@ async def get_thumbnail_handler(request: web.Request):
             headers={"Cache-Control": "public, max-age=604800, immutable"},
         )
     try:
-        index = min(work_loads, key=work_loads.get)
-        faster_client = multi_clients[index]
-        message = await faster_client.get_messages(Var.BIN_CHANNEL, msg_id)
-        if not message or message.empty:
-            return web.Response(status=404, text="Message not found")
+        bytes_data = await _video_db.get_thumbnail(msg_id)
+        if not bytes_data:
+            task = _thumb_inflight.get(msg_id)
+            if task is None:
+                task = asyncio.create_task(_extract_and_cache_thumb(msg_id))
+                _thumb_inflight[msg_id] = task
+            try:
+                bytes_data = await task
+            finally:
+                if _thumb_inflight.get(msg_id) is task:
+                    _thumb_inflight.pop(msg_id, None)
 
-        media = (
-            getattr(message, "video", None)
-            or getattr(message, "document", None)
-            or getattr(message, "photo", None)
-            or getattr(message, "animation", None)
-        )
-        if not media:
-            return web.Response(status=404, text="No media in message")
+        if not bytes_data:
+            return web.Response(status=404, text="No video frame available")
 
-        thumb_file_id = None
-        thumbs = getattr(media, "thumbs", None)
-        if thumbs:
-            thumb_file_id = thumbs[-1].file_id
-        elif getattr(media, "thumb", None):
-            thumb_file_id = media.thumb.file_id
-        elif hasattr(media, "file_id") and getattr(message, "photo", None):
-            thumb_file_id = media.file_id
-
-        if not thumb_file_id:
-            return web.Response(status=404, text="No thumbnail found for media")
-
-        buf = await faster_client.download_media(thumb_file_id, in_memory=True)
-        if not buf:
-            return web.Response(status=404, text="Failed to download thumbnail")
-
-        bytes_data = buf.getvalue() if hasattr(buf, "getvalue") else bytes(buf)
         if len(_thumb_cache) > 500:
             _thumb_cache.clear()
         _thumb_cache[msg_id] = bytes_data

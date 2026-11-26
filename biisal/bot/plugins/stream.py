@@ -18,7 +18,18 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from biisal.utils.file_properties import get_name, get_hash, get_media_file_size, get_media_from_message
 from biisal.utils.firebase_config import get_mrdb_download_url
+from biisal.utils.video_thumb import build_local_stream_url, extract_frame_10min
 db = Database(Var.DATABASE_URL, Var.name)
+
+
+async def _capture_and_store_thumbnail(msg_id: int, file_name: str, file_hash: str):
+    try:
+        local_url = build_local_stream_url(msg_id, file_name, file_hash)
+        jpeg_bytes = await extract_frame_10min(local_url)
+        if jpeg_bytes:
+            await db.save_thumbnail(msg_id, jpeg_bytes)
+    except Exception as exc:
+        print(f"Background thumbnail capture failed for {msg_id}: {exc}")
 
 _VIDEO_EXTENSIONS = (".mkv", ".mp4", ".webm", ".mov", ".avi", ".m4v", ".ts")
 
@@ -155,6 +166,11 @@ async def private_receive_handler(c: Client, m: Message):
                         "uploaded_by_owner": is_owner,
                         "created_at": datetime.datetime.utcnow().isoformat() + "Z",
                     }
+                )
+                asyncio.create_task(
+                    _capture_and_store_thumbnail(
+                        int(log_msg.id), file_name, file_hash
+                    )
                 )
             except Exception as db_err:
                 print(f"Failed to index video for app stream: {db_err}")

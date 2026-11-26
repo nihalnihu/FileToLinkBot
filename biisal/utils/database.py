@@ -2,6 +2,8 @@
 #(c) Adarsh-Goel
 import datetime
 import re
+from typing import Optional
+from bson.binary import Binary
 import motor.motor_asyncio
 
 
@@ -12,6 +14,7 @@ class Database:
         self.col = self.db.users
         self.bannedList = self.db.bannedList
         self.videos = self.db.videos
+        self.thumbnails = self.db.thumbnails
 
     def new_user(self, id, name: str = None, username: str = None):
         doc = dict(
@@ -146,15 +149,45 @@ class Database:
             {"_id": 0},
         )
 
+    async def save_thumbnail(self, msg_id: int, jpeg_bytes: bytes):
+        if not jpeg_bytes:
+            return
+        await self.thumbnails.update_one(
+            {"msg_id": int(msg_id)},
+            {
+                "$set": {
+                    "msg_id": int(msg_id),
+                    "data": Binary(bytes(jpeg_bytes)),
+                    "content_type": "image/jpeg",
+                    "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                }
+            },
+            upsert=True,
+        )
+
+    async def get_thumbnail(self, msg_id: int) -> Optional[bytes]:
+        doc = await self.thumbnails.find_one(
+            {"msg_id": int(msg_id)}, {"_id": 0, "data": 1}
+        )
+        if not doc:
+            return None
+        raw = doc.get("data")
+        return bytes(raw) if raw else None
+
     async def delete_video(self, msg_id: int = None, stream_code: str = None):
         if msg_id is not None:
             res = await self.videos.delete_many({"msg_id": int(msg_id)})
+            await self.thumbnails.delete_many({"msg_id": int(msg_id)})
             if res.deleted_count > 0:
                 return True
         if stream_code:
-            res = await self.videos.delete_many(
-                {"stream_code": stream_code.strip().upper()}
+            normalized = stream_code.strip().upper()
+            doc = await self.videos.find_one(
+                {"stream_code": normalized}, {"_id": 0, "msg_id": 1}
             )
+            res = await self.videos.delete_many({"stream_code": normalized})
+            if doc and doc.get("msg_id") is not None:
+                await self.thumbnails.delete_many({"msg_id": int(doc["msg_id"])})
             return res.deleted_count > 0
         return False
 
