@@ -17,7 +17,7 @@ from biisal.bot import multi_clients, work_loads, StreamBot
 from biisal.server.exceptions import FIleNotFound, InvalidHash
 from biisal import StartTime, __version__
 from ..utils.time_format import get_readable_time
-from ..utils.custom_dl import ByteStreamer
+from ..utils.custom_dl import ByteStreamer, yield_striped_file
 from ..utils.database import Database
 from ..utils.file_properties import get_hash, get_name
 from ..utils.video_thumb import build_local_stream_url, extract_frame_10min
@@ -528,30 +528,33 @@ async def stream_handler(request: web.Request):
 
 class_cache = {}
 
+
+def _get_streamer(client) -> ByteStreamer:
+    streamer = class_cache.get(client)
+    if streamer is None:
+        streamer = ByteStreamer(client)
+        class_cache[client] = streamer
+    return streamer
+
+
 async def media_streamer(request: web.Request, id: int, secure_hash: str):
     range_header = request.headers.get("Range", 0)
-    
+
     index = min(work_loads, key=work_loads.get)
     faster_client = multi_clients[index]
-    
+
     if Var.MULTI_CLIENT:
         logging.info(f"Client {index} is now serving {request.remote}")
 
-    if faster_client in class_cache:
-        tg_connect = class_cache[faster_client]
-        logging.debug(f"Using cached ByteStreamer object for client {index}")
-    else:
-        logging.debug(f"Creating new ByteStreamer object for client {index}")
-        tg_connect = ByteStreamer(faster_client)
-        class_cache[faster_client] = tg_connect
+    tg_connect = _get_streamer(faster_client)
     logging.debug("before calling get_file_properties")
     file_id = await tg_connect.get_file_properties(id)
     logging.debug("after calling get_file_properties")
-    
+
     if file_id.unique_id[:6] != secure_hash:
         logging.debug(f"Invalid hash for message with ID {id}")
         raise InvalidHash
-    
+
     file_size = file_id.file_size
 
     if range_header:
@@ -578,9 +581,28 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
 
     req_length = until_bytes - from_bytes + 1
     part_count = math.ceil(until_bytes / chunk_size) - math.floor(offset / chunk_size)
-    body = tg_connect.yield_file(
-        file_id, index, offset, first_part_cut, last_part_cut, part_count, chunk_size
-    )
+    if len(multi_clients) > 1 and part_count >= 3:
+        streamers_by_index = {
+            idx: _get_streamer(client)
+            for idx, client in multi_clients.items()
+            if client is not None
+        }
+        body = yield_striped_file(
+            msg_id=id,
+            primary_streamer=tg_connect,
+            primary_index=index,
+            primary_file_id=file_id,
+            streamers_by_index=streamers_by_index,
+            offset=offset,
+            first_part_cut=first_part_cut,
+            last_part_cut=last_part_cut,
+            part_count=part_count,
+            chunk_size=chunk_size,
+        )
+    else:
+        body = tg_connect.yield_file(
+            file_id, index, offset, first_part_cut, last_part_cut, part_count, chunk_size
+        )
 
     mime_type = file_id.mime_type
     file_name = file_id.file_name

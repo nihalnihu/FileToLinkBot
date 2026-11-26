@@ -37,9 +37,10 @@ async def initialize_clients():
             logging.error(f"Failed starting Client - {client_id} Error:", exc_info=True)
     
     clients = await asyncio.gather(*[start_client(i, token) for i, token in all_tokens.items()])
-    multi_clients.update(dict(clients))
-    if len(multi_clients) != 1:
+    valid_clients = [entry for entry in clients if entry is not None]
+    multi_clients.update(dict(valid_clients))
+    if len(multi_clients) > 1:
         Var.MULTI_CLIENT = True
-        print("Multi-Client Mode Enabled")
+        print(f"Multi-Client Mode Enabled ({len(multi_clients)} clients)")
     else:
         print("No additional clients were initialized, using default client")

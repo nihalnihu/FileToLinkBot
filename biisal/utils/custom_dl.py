@@ -2,7 +2,7 @@ import math
 import asyncio
 import logging
 from biisal.vars import Var
-from typing import Dict, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from biisal.bot import work_loads
 from pyrogram import Client, utils, raw
 from .file_properties import get_file_ids
@@ -248,7 +248,7 @@ class ByteStreamer:
 
         current_part = 1
         location = None
-        prefetch_ahead = 2
+        prefetch_ahead = 1 if part_count <= 2 else 3
         pending_tasks: Dict[int, asyncio.Task] = {}
 
         async def _drain_pending() -> None:
@@ -370,3 +370,193 @@ class ByteStreamer:
             await asyncio.sleep(self.clean_timer)
             self.cached_file_ids.clear()
             logging.debug("Cleaned the cache")
+
+
+class _StripedWorker:
+    __slots__ = ("index", "streamer", "file_id", "location", "media_session")
+
+    def __init__(
+        self,
+        index: int,
+        streamer: ByteStreamer,
+        file_id: FileId,
+        location: Any,
+        media_session: Session,
+    ):
+        self.index = index
+        self.streamer = streamer
+        self.file_id = file_id
+        self.location = location
+        self.media_session = media_session
+
+
+async def yield_striped_file(
+    msg_id: int,
+    primary_streamer: ByteStreamer,
+    primary_index: int,
+    primary_file_id: FileId,
+    streamers_by_index: Dict[int, ByteStreamer],
+    offset: int,
+    first_part_cut: int,
+    last_part_cut: int,
+    part_count: int,
+    chunk_size: int,
+):
+    """Stripes Telegram `GetFile` chunk fetches across multiple bot clients
+    simultaneously and yields bytes strictly in sequential order."""
+    if part_count <= 0:
+        return
+
+    async def _init_worker(idx: int, streamer: ByteStreamer) -> Optional[_StripedWorker]:
+        try:
+            fid = (
+                primary_file_id
+                if idx == primary_index
+                else await streamer.get_file_properties(msg_id)
+            )
+            loc = await streamer.get_location(fid)
+            sess = await streamer.generate_media_session(streamer.client, fid)
+            return _StripedWorker(idx, streamer, fid, loc, sess)
+        except Exception as err:
+            logging.warning(f"Skipping striped worker {idx} for msg {msg_id}: {err}")
+            return None
+
+    ordered_indices = [primary_index] + [
+        idx
+        for idx in sorted(
+            streamers_by_index.keys(),
+            key=lambda i: work_loads.get(i, 0),
+        )
+        if idx != primary_index
+    ]
+
+    primary_loc = await primary_streamer.get_location(primary_file_id)
+    primary_sess = await primary_streamer.generate_media_session(
+        primary_streamer.client, primary_file_id
+    )
+    active_workers: List[_StripedWorker] = [
+        _StripedWorker(
+            primary_index, primary_streamer, primary_file_id, primary_loc, primary_sess
+        )
+    ]
+
+    secondary_coros = [
+        _init_worker(idx, streamers_by_index[idx])
+        for idx in ordered_indices
+        if idx != primary_index
+    ]
+    if secondary_coros:
+        try:
+            resolved = await asyncio.wait_for(
+                asyncio.gather(*secondary_coros, return_exceptions=True),
+                timeout=3.0,
+            )
+            for res in resolved:
+                if isinstance(res, _StripedWorker):
+                    active_workers.append(res)
+        except asyncio.TimeoutError:
+            pass
+
+    acquired_indices: List[int] = [w.index for w in active_workers]
+    for idx in acquired_indices:
+        work_loads[idx] = work_loads.get(idx, 0) + 1
+
+    prefetch_ahead = min(max(2, len(active_workers) * 2), 8)
+    pending_tasks: Dict[int, Tuple[asyncio.Task, _StripedWorker]] = {}
+    current_part = 1
+
+    def _schedule_part(part_idx: int) -> None:
+        if part_idx > part_count or part_idx in pending_tasks or not active_workers:
+            return
+        worker = active_workers[(part_idx - 1) % len(active_workers)]
+        part_offset = offset + (part_idx - 1) * chunk_size
+        task = asyncio.create_task(
+            worker.media_session.invoke(
+                raw.functions.upload.GetFile(
+                    location=worker.location,
+                    offset=part_offset,
+                    limit=chunk_size,
+                ),
+            )
+        )
+        task.add_done_callback(ByteStreamer._consume_task_exception)
+        pending_tasks[part_idx] = (task, worker)
+
+    try:
+        for p in range(1, min(part_count, prefetch_ahead) + 1):
+            _schedule_part(p)
+
+        recoveries = 0
+        while current_part <= part_count:
+            entry = pending_tasks.pop(current_part, None)
+            if entry is None:
+                if not active_workers:
+                    break
+                _schedule_part(current_part)
+                entry = pending_tasks.pop(current_part, None)
+                if entry is None:
+                    break
+
+            task, worker = entry
+            try:
+                r = await task
+                recoveries = 0
+            except Exception as err:
+                await worker.streamer._invalidate_media_session(
+                    worker.streamer.client,
+                    worker.file_id.dc_id,
+                    worker.media_session,
+                )
+                if len(active_workers) > 1 or (worker not in active_workers and active_workers):
+                    if worker in active_workers:
+                        active_workers.remove(worker)
+                    logging.warning(
+                        f"Worker {worker.index} failed at part {current_part}; failing over ({len(active_workers)} left): {err}"
+                    )
+                    continue
+
+                if recoveries >= 2:
+                    logging.warning(
+                        f"Stopping striped stream for msg {msg_id} at part {current_part}: {err}"
+                    )
+                    break
+                recoveries += 1
+                worker.media_session = await worker.streamer.generate_media_session(
+                    worker.streamer.client, worker.file_id
+                )
+                continue
+
+            _schedule_part(current_part + prefetch_ahead)
+
+            if not isinstance(r, raw.types.upload.File):
+                break
+            chunk = r.bytes
+            if not chunk:
+                break
+            elif part_count == 1:
+                yield chunk[first_part_cut:last_part_cut]
+            elif current_part == 1:
+                yield chunk[first_part_cut:]
+            elif current_part == part_count:
+                yield chunk[:last_part_cut]
+            else:
+                yield chunk
+
+            current_part += 1
+    except (GeneratorExit, asyncio.CancelledError):
+        raise
+    except Exception as err:
+        logging.warning(f"Striped stream interrupted at part {current_part}: {err}")
+    finally:
+        try:
+            tasks_to_drain = []
+            for task, _ in pending_tasks.values():
+                if not task.done():
+                    task.cancel()
+                tasks_to_drain.append(task)
+            pending_tasks.clear()
+            if tasks_to_drain:
+                await asyncio.gather(*tasks_to_drain, return_exceptions=True)
+        finally:
+            for idx in acquired_indices:
+                work_loads[idx] = max(0, work_loads.get(idx, 1) - 1)
