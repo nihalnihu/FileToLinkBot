@@ -407,20 +407,6 @@ async def yield_striped_file(
     if part_count <= 0:
         return
 
-    async def _init_worker(idx: int, streamer: ByteStreamer) -> Optional[_StripedWorker]:
-        try:
-            fid = (
-                primary_file_id
-                if idx == primary_index
-                else await streamer.get_file_properties(msg_id)
-            )
-            loc = await streamer.get_location(fid)
-            sess = await streamer.generate_media_session(streamer.client, fid)
-            return _StripedWorker(idx, streamer, fid, loc, sess)
-        except Exception as err:
-            logging.warning(f"Skipping striped worker {idx} for msg {msg_id}: {err}")
-            return None
-
     ordered_indices = [primary_index] + [
         idx
         for idx in sorted(
@@ -439,29 +425,54 @@ async def yield_striped_file(
             primary_index, primary_streamer, primary_file_id, primary_loc, primary_sess
         )
     ]
+    acquired_indices: List[int] = [primary_index]
+    work_loads[primary_index] = work_loads.get(primary_index, 0) + 1
 
-    secondary_coros = [
-        _init_worker(idx, streamers_by_index[idx])
-        for idx in ordered_indices
-        if idx != primary_index
-    ]
-    if secondary_coros:
+    secondary_init_tasks: List[asyncio.Task] = []
+    stream_closed = False
+
+    async def _attach_secondary(idx: int, streamer: ByteStreamer) -> None:
         try:
-            resolved = await asyncio.wait_for(
-                asyncio.gather(*secondary_coros, return_exceptions=True),
-                timeout=3.0,
-            )
-            for res in resolved:
-                if isinstance(res, _StripedWorker):
-                    active_workers.append(res)
-        except asyncio.TimeoutError:
+            fid = await streamer.get_file_properties(msg_id)
+            loc = await streamer.get_location(fid)
+            sess = await streamer.generate_media_session(streamer.client, fid)
+            if stream_closed:
+                return
+            w = _StripedWorker(idx, streamer, fid, loc, sess)
+            if w not in active_workers:
+                active_workers.append(w)
+                acquired_indices.append(idx)
+                work_loads[idx] = work_loads.get(idx, 0) + 1
+        except asyncio.CancelledError:
             pass
+        except Exception as err:
+            logging.warning(f"Skipping striped worker {idx} for msg {msg_id}: {err}")
 
-    acquired_indices: List[int] = [w.index for w in active_workers]
-    for idx in acquired_indices:
-        work_loads[idx] = work_loads.get(idx, 0) + 1
+    for idx in ordered_indices:
+        if idx == primary_index:
+            continue
+        streamer = streamers_by_index[idx]
+        cached_fid = streamer.cached_file_ids.get(msg_id)
+        cached_sess = (
+            streamer.client.media_sessions.get(cached_fid.dc_id)
+            if cached_fid is not None
+            else None
+        )
+        if cached_fid is not None and ByteStreamer._is_session_healthy(cached_sess):
+            loc = await streamer.get_location(cached_fid)
+            active_workers.append(
+                _StripedWorker(idx, streamer, cached_fid, loc, cached_sess)
+            )
+            acquired_indices.append(idx)
+            work_loads[idx] = work_loads.get(idx, 0) + 1
+        else:
+            t = asyncio.create_task(_attach_secondary(idx, streamer))
+            t.add_done_callback(ByteStreamer._consume_task_exception)
+            secondary_init_tasks.append(t)
 
-    prefetch_ahead = min(max(2, len(active_workers) * 2), 8)
+    def _current_prefetch_ahead() -> int:
+        return min(max(2, len(active_workers) * 2), 8)
+
     pending_tasks: Dict[int, Tuple[asyncio.Task, _StripedWorker]] = {}
     current_part = 1
 
@@ -483,7 +494,7 @@ async def yield_striped_file(
         pending_tasks[part_idx] = (task, worker)
 
     try:
-        for p in range(1, min(part_count, prefetch_ahead) + 1):
+        for p in range(1, min(part_count, _current_prefetch_ahead()) + 1):
             _schedule_part(p)
 
         recoveries = 0
@@ -526,7 +537,9 @@ async def yield_striped_file(
                 )
                 continue
 
-            _schedule_part(current_part + prefetch_ahead)
+            ahead = _current_prefetch_ahead()
+            for p in range(current_part + 1, min(part_count, current_part + ahead) + 1):
+                _schedule_part(p)
 
             if not isinstance(r, raw.types.upload.File):
                 break
@@ -548,6 +561,7 @@ async def yield_striped_file(
     except Exception as err:
         logging.warning(f"Striped stream interrupted at part {current_part}: {err}")
     finally:
+        stream_closed = True
         try:
             tasks_to_drain = []
             for task, _ in pending_tasks.values():
@@ -555,6 +569,11 @@ async def yield_striped_file(
                     task.cancel()
                 tasks_to_drain.append(task)
             pending_tasks.clear()
+            for stask in secondary_init_tasks:
+                if not stask.done():
+                    stask.cancel()
+                tasks_to_drain.append(stask)
+            secondary_init_tasks.clear()
             if tasks_to_drain:
                 await asyncio.gather(*tasks_to_drain, return_exceptions=True)
         finally:
