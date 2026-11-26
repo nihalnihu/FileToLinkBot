@@ -21,6 +21,7 @@ from ..utils.custom_dl import ByteStreamer
 from ..utils.database import Database
 from ..utils.file_properties import get_hash, get_name
 from ..utils.video_thumb import build_local_stream_url, extract_frame_10min
+from ..utils.video_transcode import TRANSCODE_PROFILES, stream_transcoded_video
 from biisal.utils.render_template import render_page
 from biisal.vars import Var
 
@@ -148,6 +149,64 @@ async def get_thumbnail_handler(request: web.Request):
         )
     except Exception as e:
         logging.error(f"Thumbnail error for {msg_id}: {e}")
+        return web.Response(status=500, text=str(e))
+
+
+@routes.get(r"/transcode/{msg_id:\d+}/{quality:\d+p?}", allow_head=True)
+async def transcode_video_handler(request: web.Request):
+    try:
+        msg_id = int(request.match_info["msg_id"])
+        raw_quality = request.match_info["quality"].lower().rstrip("p")
+        target_height = int(raw_quality)
+        if target_height not in TRANSCODE_PROFILES:
+            return web.Response(status=400, text="Unsupported quality profile")
+
+        secure_hash = (request.rel_url.query.get("hash") or "").strip()
+        ss_raw = (request.rel_url.query.get("ss") or "0").strip()
+        start_seconds = int(ss_raw) if ss_raw.isdigit() else 0
+
+        index = min(work_loads, key=work_loads.get)
+        faster_client = multi_clients[index]
+        tg_connect = class_cache.get(faster_client)
+        if tg_connect is None:
+            tg_connect = ByteStreamer(faster_client)
+            class_cache[faster_client] = tg_connect
+
+        file_id = await tg_connect.get_file_properties(msg_id)
+        if not secure_hash or file_id.unique_id[:6] != secure_hash:
+            return web.Response(status=403, text="Invalid hash")
+
+        if request.method.upper() == "HEAD":
+            return web.Response(
+                status=200,
+                headers={
+                    "Content-Type": "video/x-matroska",
+                    "Accept-Ranges": "none",
+                    "Cache-Control": "no-store",
+                },
+            )
+
+        file_name = file_id.file_name or f"video_{msg_id}.mkv"
+        return await stream_transcoded_video(
+            request=request,
+            msg_id=msg_id,
+            file_name=file_name,
+            secure_hash=secure_hash,
+            target_height=target_height,
+            start_seconds=start_seconds,
+        )
+    except FIleNotFound as e:
+        return web.Response(status=404, text=e.message)
+    except (
+        AttributeError,
+        BadStatusLine,
+        ConnectionResetError,
+        BrokenPipeError,
+        ConnectionAbortedError,
+    ):
+        return web.Response(status=499)
+    except Exception as e:
+        logging.error(f"Transcode handler error: {e}")
         return web.Response(status=500, text=str(e))
 
 
