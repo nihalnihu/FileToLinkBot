@@ -6,7 +6,7 @@ from urllib.parse import quote_plus
 
 from biisal.vars import Var
 
-_EXTRACT_SEMAPHORE = asyncio.Semaphore(2)
+_EXTRACT_SEMAPHORE = asyncio.Semaphore(1)
 
 
 def _resolve_ffmpeg_exe() -> Optional[str]:

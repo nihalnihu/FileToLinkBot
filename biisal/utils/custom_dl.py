@@ -31,7 +31,54 @@ class ByteStreamer:
         self.clean_timer = 30 * 60
         self.client: Client = client
         self.cached_file_ids: Dict[int, FileId] = {}
+        self._session_locks: Dict[tuple, asyncio.Lock] = {}
         asyncio.create_task(self.clean_cache())
+
+    def _get_session_lock(self, client: Client, dc_id: int) -> asyncio.Lock:
+        key = (id(client), dc_id)
+        lock = self._session_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[key] = lock
+        return lock
+
+    @staticmethod
+    def _is_session_healthy(media_session: Session) -> bool:
+        if media_session is None:
+            return False
+        is_connected = getattr(media_session, "is_connected", None)
+        if is_connected is None or not is_connected.is_set():
+            return False
+        connection = getattr(media_session, "connection", None)
+        protocol = getattr(connection, "protocol", None) if connection is not None else None
+        if protocol is None:
+            return False
+        if hasattr(protocol, "encrypt") and getattr(protocol, "encrypt", None) is None:
+            return False
+        return True
+
+    @staticmethod
+    async def _safe_stop_session(media_session: Session) -> None:
+        if media_session is None:
+            return
+        try:
+            await media_session.stop()
+        except Exception as err:
+            logging.debug(f"Ignoring error while stopping stale media session: {err}")
+
+    async def _invalidate_media_session(
+        self, client: Client, dc_id: int, stale_session: Session
+    ) -> None:
+        async with self._get_session_lock(client, dc_id):
+            current = client.media_sessions.get(dc_id)
+            if current is stale_session:
+                client.media_sessions.pop(dc_id, None)
+                await self._safe_stop_session(stale_session)
+
+    @staticmethod
+    def _consume_task_exception(task: asyncio.Task) -> None:
+        if not task.cancelled():
+            task.exception()
 
     async def get_file_properties(self, id: int) -> FileId:
         """
@@ -63,56 +110,76 @@ class ByteStreamer:
         Generates the media session for the DC that contains the media file.
         This is required for getting the bytes from Telegram servers.
         """
+        async with self._get_session_lock(client, file_id.dc_id):
+            media_session = client.media_sessions.get(file_id.dc_id, None)
 
-        media_session = client.media_sessions.get(file_id.dc_id, None)
-
-        if media_session is None:
-            if file_id.dc_id != await client.storage.dc_id():
-                media_session = Session(
-                    client,
-                    file_id.dc_id,
-                    await Auth(
-                        client, file_id.dc_id, await client.storage.test_mode()
-                    ).create(),
-                    await client.storage.test_mode(),
-                    is_media=True,
-                )
-                await media_session.start()
-
-                for _ in range(6):
-                    exported_auth = await client.invoke(
-                        raw.functions.auth.ExportAuthorization(dc_id=file_id.dc_id)
+            if media_session is not None and not self._is_session_healthy(media_session):
+                is_connected = getattr(media_session, "is_connected", None)
+                if is_connected is not None:
+                    try:
+                        await asyncio.wait_for(is_connected.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass
+                if not self._is_session_healthy(media_session):
+                    logging.warning(
+                        f"Cached media session for DC {file_id.dc_id} is unhealthy; recreating."
                     )
+                    client.media_sessions.pop(file_id.dc_id, None)
+                    await self._safe_stop_session(media_session)
+                    media_session = None
+
+            if media_session is None:
+                if file_id.dc_id != await client.storage.dc_id():
+                    media_session = Session(
+                        client,
+                        file_id.dc_id,
+                        await Auth(
+                            client, file_id.dc_id, await client.storage.test_mode()
+                        ).create(),
+                        await client.storage.test_mode(),
+                        is_media=True,
+                    )
+                    await media_session.start()
 
                     try:
-                        await media_session.send(
-                            raw.functions.auth.ImportAuthorization(
-                                id=exported_auth.id, bytes=exported_auth.bytes
+                        for _ in range(6):
+                            exported_auth = await client.invoke(
+                                raw.functions.auth.ExportAuthorization(
+                                    dc_id=file_id.dc_id
+                                )
                             )
-                        )
-                        break
-                    except AuthBytesInvalid:
-                        logging.debug(
-                            f"Invalid authorization bytes for DC {file_id.dc_id}"
-                        )
-                        continue
+
+                            try:
+                                await media_session.invoke(
+                                    raw.functions.auth.ImportAuthorization(
+                                        id=exported_auth.id, bytes=exported_auth.bytes
+                                    )
+                                )
+                                break
+                            except AuthBytesInvalid:
+                                logging.debug(
+                                    f"Invalid authorization bytes for DC {file_id.dc_id}"
+                                )
+                                continue
+                        else:
+                            raise AuthBytesInvalid
+                    except Exception:
+                        await self._safe_stop_session(media_session)
+                        raise
                 else:
-                    await media_session.stop()
-                    raise AuthBytesInvalid
+                    media_session = Session(
+                        client,
+                        file_id.dc_id,
+                        await client.storage.auth_key(),
+                        await client.storage.test_mode(),
+                        is_media=True,
+                    )
+                    await media_session.start()
+                logging.debug(f"Created media session for DC {file_id.dc_id}")
+                client.media_sessions[file_id.dc_id] = media_session
             else:
-                media_session = Session(
-                    client,
-                    file_id.dc_id,
-                    await client.storage.auth_key(),
-                    await client.storage.test_mode(),
-                    is_media=True,
-                )
-                await media_session.start()
-            logging.debug(f"Created media session for DC {file_id.dc_id}")
-            client.media_sessions[file_id.dc_id] = media_session
-        else:
-            logging.debug(f"Using cached media session for DC {file_id.dc_id}")
-        return media_session
+                logging.debug(f"Using cached media session for DC {file_id.dc_id}")
+            return media_session
 
 
     @staticmethod
@@ -178,35 +245,81 @@ class ByteStreamer:
         client = self.client
         work_loads[index] += 1
         logging.debug(f"Starting to yielding file with client {index}.")
-        media_session = await self.generate_media_session(client, file_id)
 
         current_part = 1
-        location = await self.get_location(file_id)
-        prefetch_ahead = 3
+        location = None
+        prefetch_ahead = 2
         pending_tasks: Dict[int, asyncio.Task] = {}
 
-        def _schedule_part(part_idx: int) -> None:
+        async def _drain_pending() -> None:
+            if not pending_tasks:
+                return
+            tasks = list(pending_tasks.values())
+            pending_tasks.clear()
+            for pending in tasks:
+                if not pending.done():
+                    pending.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        def _schedule_part(session: Session, part_idx: int) -> None:
             if part_idx > part_count or part_idx in pending_tasks:
                 return
             part_offset = offset + (part_idx - 1) * chunk_size
-            pending_tasks[part_idx] = asyncio.create_task(
-                media_session.send(
+            task = asyncio.create_task(
+                session.invoke(
                     raw.functions.upload.GetFile(
                         location=location, offset=part_offset, limit=chunk_size
                     ),
                 )
             )
+            task.add_done_callback(self._consume_task_exception)
+            pending_tasks[part_idx] = task
+
+        def _prime_prefetch(session: Session, start_part: int) -> None:
+            for p in range(
+                start_part, min(part_count, start_part + prefetch_ahead - 1) + 1
+            ):
+                _schedule_part(session, p)
 
         try:
-            for p in range(1, min(part_count, prefetch_ahead) + 1):
-                _schedule_part(p)
+            location = await self.get_location(file_id)
+            media_session = await self.generate_media_session(client, file_id)
+            _prime_prefetch(media_session, current_part)
+            session_recoveries = 0
 
             while current_part <= part_count:
                 task = pending_tasks.pop(current_part, None)
                 if task is None:
                     break
-                r = await task
-                _schedule_part(current_part + prefetch_ahead)
+                try:
+                    r = await task
+                    session_recoveries = 0
+                except (
+                    TimeoutError,
+                    asyncio.TimeoutError,
+                    AttributeError,
+                    OSError,
+                    TypeError,
+                    ConnectionError,
+                ) as err:
+                    await _drain_pending()
+                    await self._invalidate_media_session(
+                        client, file_id.dc_id, media_session
+                    )
+                    if session_recoveries >= 2:
+                        logging.warning(
+                            f"Stopping stream for DC {file_id.dc_id} part {current_part} after session error: {err}"
+                        )
+                        break
+                    session_recoveries += 1
+                    logging.warning(
+                        f"Recovering media session for DC {file_id.dc_id} at part {current_part} ({session_recoveries}/2): {err}"
+                    )
+                    media_session = await self.generate_media_session(client, file_id)
+                    _prime_prefetch(media_session, current_part)
+                    continue
+
+                _schedule_part(media_session, current_part + prefetch_ahead)
 
                 if not isinstance(r, raw.types.upload.File):
                     break
@@ -223,14 +336,30 @@ class ByteStreamer:
                     yield chunk
 
                 current_part += 1
-        except (TimeoutError, AttributeError):
-            pass
+        except (GeneratorExit, asyncio.CancelledError):
+            raise
+        except (
+            TimeoutError,
+            asyncio.TimeoutError,
+            AttributeError,
+            OSError,
+            TypeError,
+            ConnectionError,
+        ) as err:
+            logging.warning(f"Stream interrupted while yielding file: {err}")
         finally:
-            for task in pending_tasks.values():
-                if not task.done():
-                    task.cancel()
-            logging.debug(f"Finished yielding file with {current_part} parts.")
-            work_loads[index] -= 1
+            try:
+                for task in pending_tasks.values():
+                    if not task.done():
+                        task.cancel()
+                if pending_tasks:
+                    await asyncio.gather(
+                        *pending_tasks.values(), return_exceptions=True
+                    )
+                    pending_tasks.clear()
+            finally:
+                logging.debug(f"Finished yielding file with {current_part} parts.")
+                work_loads[index] -= 1
 
     
     async def clean_cache(self) -> None:
