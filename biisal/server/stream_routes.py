@@ -477,6 +477,46 @@ async def get_video_tracks_handler(request: web.Request):
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+@routes.post(r"/api/admin/videos/{identifier:\S+}/ai-clean")
+async def admin_ai_clean_video_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    try:
+        identifier = request.match_info.get("identifier", "").strip()
+        if not identifier:
+            return web.json_response({"ok": False, "error": "Missing identifier"}, status=400)
+        row = await _video_db.get_video_by_identifier(identifier)
+        if not row or row.get("msg_id") is None:
+            return web.json_response({"ok": False, "error": "Video not found"}, status=404)
+        payload = {}
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                payload = body
+        except Exception:
+            pass
+
+        from biisal.utils.ai_cleaner import auto_clean_filename_with_ai
+
+        msg_id = int(row["msg_id"])
+        file_hash = str(row.get("hash") or "").strip()
+        file_name = str(payload.get("file_name") or row.get("file_name") or "").strip()
+        result = await auto_clean_filename_with_ai(
+            file_name,
+            msg_id=msg_id,
+            file_hash=file_hash,
+            existing_title=payload.get("existing_title"),
+            gemini_api_key_override=payload.get("gemini_api_key"),
+            prompt_preset=payload.get("prompt_preset"),
+        )
+        if not result:
+            return web.json_response({"ok": False, "error": "AI clean failed"}, status=502)
+        return web.json_response({"ok": True, "suggestion": result})
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
 @routes.patch(r"/api/admin/videos/{identifier:\S+}")
 @routes.post(r"/api/admin/videos/{identifier:\S+}")
 async def admin_update_video_handler(request: web.Request):

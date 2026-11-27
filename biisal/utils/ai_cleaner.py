@@ -236,8 +236,12 @@ async def _call_ai_json(
     session: aiohttp.ClientSession,
     system_prompt: str,
     user_prompt: str,
-) -> Optional[str]:
-    gemini_key = (getattr(Var, "GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")).strip()
+    gemini_api_key_override: Optional[str] = None,
+) -> Optional[Tuple[str, str]]:
+    gemini_key = (
+        (gemini_api_key_override or "").strip()
+        or (getattr(Var, "GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")).strip()
+    )
     if gemini_key:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -252,7 +256,7 @@ async def _call_ai_json(
             async with session.post(url, json=payload) as resp:
                 if 200 <= resp.status < 300:
                     body = await resp.json()
-                    return str(body["candidates"][0]["content"]["parts"][0]["text"])
+                    return str(body["candidates"][0]["content"]["parts"][0]["text"]), "Bot Gemini"
         except Exception:
             pass
 
@@ -268,7 +272,7 @@ async def _call_ai_json(
         async with session.post("https://text.pollinations.ai/openai", json=poll_payload) as resp:
             if 200 <= resp.status < 300:
                 body = await resp.json()
-                return str(body["choices"][0]["message"]["content"])
+                return str(body["choices"][0]["message"]["content"]), "Bot Pollinations AI"
     except Exception:
         pass
     return None
@@ -334,15 +338,18 @@ async def _fetch_original_language_from_ai(
     session: aiohttp.ClientSession,
     title: str,
     year: Optional[int],
+    gemini_api_key_override: Optional[str] = None,
 ) -> Optional[str]:
     q = f"{title} ({year})" if year else title
-    raw = await _call_ai_json(
+    res = await _call_ai_json(
         session,
         'Return ONLY JSON: {"original_language": "<Primary language of this movie/series, e.g. Malayalam, Tamil, Hindi, Telugu, Kannada, English>"}',
         f"Movie/Series: {q}",
+        gemini_api_key_override=gemini_api_key_override,
     )
-    if not raw:
+    if not res:
         return None
+    raw, _ = res
     start = raw.find("{")
     end = raw.rfind("}")
     if start == -1 or end <= start:
@@ -413,19 +420,32 @@ async def auto_clean_filename_with_ai(
     file_name: str,
     msg_id: Optional[int] = None,
     file_hash: Optional[str] = None,
+    existing_title: Optional[str] = None,
+    gemini_api_key_override: Optional[str] = None,
+    prompt_preset: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     raw = (file_name or "").strip()
     if not raw:
         return None
 
-    timeout = aiohttp.ClientTimeout(total=14)
+    user_prompt = f"Raw filename: {raw}"
+    if existing_title and existing_title.strip() and existing_title.strip() != raw:
+        user_prompt += f"\nExisting title in editor: {existing_title.strip()}"
+
+    sys_prompt = _ANALYZE_SYSTEM_PROMPT
+    if prompt_preset and prompt_preset.strip() and prompt_preset.strip() != DEFAULT_PROMPT_PRESET:
+        sys_prompt += f" User formatting preference: {prompt_preset.strip()}"
+
+    timeout = aiohttp.ClientTimeout(total=18)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         # 1. AI analyzes the raw filename (falls back locally if AI quota/402 occurs)
-        raw_ai = await _call_ai_json(
+        ai_res = await _call_ai_json(
             session,
-            _ANALYZE_SYSTEM_PROMPT,
-            f"Raw filename: {raw}",
+            sys_prompt,
+            user_prompt,
+            gemini_api_key_override=gemini_api_key_override,
         )
+        raw_ai, ai_provider = ai_res if ai_res else (None, "Bot Local")
         parsed = (parse_ai_analysis_json(raw_ai) if raw_ai else None) or _local_fallback_parse(raw)
         if not parsed:
             return None
@@ -451,7 +471,10 @@ async def auto_clean_filename_with_ai(
                 year = imdb_year
             if title_changed or not original_language:
                 refreshed = await _fetch_original_language_from_ai(
-                    session, base_title, year
+                    session,
+                    base_title,
+                    year,
+                    gemini_api_key_override=gemini_api_key_override,
                 )
                 if refreshed:
                     original_language = refreshed
@@ -477,7 +500,10 @@ async def auto_clean_filename_with_ai(
         if not language:
             if not original_language:
                 original_language = await _fetch_original_language_from_ai(
-                    session, base_title, year
+                    session,
+                    base_title,
+                    year,
+                    gemini_api_key_override=gemini_api_key_override,
                 )
             language = original_language
 
@@ -490,7 +516,16 @@ async def auto_clean_filename_with_ai(
             episode=episode,
         )
 
-        out: Dict[str, Any] = {"title": formatted_name}
+        out: Dict[str, Any] = {
+            "title": formatted_name,
+            "clean_title": base_title,
+            "is_series": is_series,
+            "ai_provider": ai_provider,
+        }
+        if season is not None:
+            out["season"] = season
+        if episode is not None:
+            out["episode"] = episode
         if year is not None:
             out["year"] = year
         if quality:
