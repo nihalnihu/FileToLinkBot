@@ -47,6 +47,59 @@ async def _capture_and_store_thumbnail(msg_id: int, file_name: str, file_hash: s
     except Exception as exc:
         print(f"Background thumbnail capture failed for {msg_id}: {exc}")
 
+
+async def _background_index_and_clean(
+    log_msg: Message,
+    user_id: int,
+    first_name: str,
+    file_name: str,
+    file_hash: str,
+    file_size: int,
+    stream_code: str,
+    stream_link: str,
+    is_owner: bool,
+    is_video: bool,
+    mime_type: str,
+    caption: Optional[str],
+):
+    try:
+        await log_msg.reply_text(
+            text=(
+                f"**RᴇQᴜᴇꜱᴛᴇᴅ ʙʏ :** [{first_name}](tg://user?id={user_id})\n"
+                f"**Uꜱᴇʀ ɪᴅ :** `{user_id}`\n"
+                f"**Code :** `{stream_code}`\n"
+                f"**Stream ʟɪɴᴋ :** {stream_link}"
+            ),
+            disable_web_page_preview=True,
+            quote=True,
+        )
+    except Exception as log_err:
+        print(f"Failed to post BIN_CHANNEL info for {log_msg.id}: {log_err}")
+
+    if not is_video:
+        return
+
+    title, tmdb_id = _parse_video_caption(caption, file_name)
+    try:
+        await db.add_video(
+            {
+                "msg_id": int(log_msg.id),
+                "hash": file_hash,
+                "stream_code": stream_code,
+                "file_name": file_name,
+                "file_size": int(file_size or 0),
+                "mime_type": mime_type,
+                "title": title,
+                "tmdb_id": tmdb_id,
+                "uploaded_by_owner": is_owner,
+                "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+            }
+        )
+        await _auto_clean_video_metadata(int(log_msg.id), file_name, file_hash)
+        await _capture_and_store_thumbnail(int(log_msg.id), file_name, file_hash)
+    except Exception as db_err:
+        print(f"Failed to index video for app stream: {db_err}")
+
 _VIDEO_EXTENSIONS = (".mkv", ".mp4", ".webm", ".mov", ".avi", ".m4v", ".ts")
 
 
@@ -163,35 +216,6 @@ async def private_receive_handler(c: Client, m: Message):
 
         is_owner = bool(m.from_user and (m.from_user.id in Var.OWNER_ID))
         is_video, mime_type = _is_video_media(m)
-        if is_video:
-            title, tmdb_id = _parse_video_caption(m.caption, file_name)
-            try:
-                await db.add_video(
-                    {
-                        "msg_id": int(log_msg.id),
-                        "hash": file_hash,
-                        "stream_code": stream_code,
-                        "file_name": file_name,
-                        "file_size": int(file_size or 0),
-                        "mime_type": mime_type,
-                        "title": title,
-                        "tmdb_id": tmdb_id,
-                        "uploaded_by_owner": is_owner,
-                        "created_at": datetime.datetime.utcnow().isoformat() + "Z",
-                    }
-                )
-                asyncio.create_task(
-                    _capture_and_store_thumbnail(
-                        int(log_msg.id), file_name, file_hash
-                    )
-                )
-                asyncio.create_task(
-                    _auto_clean_video_metadata(
-                        int(log_msg.id), file_name, file_hash
-                    )
-                )
-            except Exception as db_err:
-                print(f"Failed to index video for app stream: {db_err}")
 
         app_download_url = await get_mrdb_download_url()
         reply_buttons = [
@@ -208,13 +232,30 @@ async def private_receive_handler(c: Client, m: Message):
             [InlineKeyboardButton('☕ 𝖻𝗎𝗒 𝗆𝖾 𝖺 𝖼𝗈𝖿𝖿𝖾𝖾 ☕', url="https://www.buymeacoffee.com/nihaal")]
         )
 
-        await log_msg.reply_text(text=f"**RᴇQᴜᴇꜱᴛᴇᴅ ʙʏ :** [{m.from_user.first_name}](tg://user?id={m.from_user.id})\n**Uꜱᴇʀ ɪᴅ :** `{m.from_user.id}`\n**Code :** `{stream_code}`\n**Stream ʟɪɴᴋ :** {stream_link}", disable_web_page_preview=True,  quote=True)
+        # Send the download/stream reply immediately, then run DB indexing,
+        # audio metadata probing, TMDB matching, and AI renaming in background.
         await m.reply_text(
             text=msg_text.format(file_name, humanbytes(file_size), stream_code, online_link, stream_link),
             quote=True,
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(reply_buttons)
-         )
+        )
+        asyncio.create_task(
+            _background_index_and_clean(
+                log_msg=log_msg,
+                user_id=int(m.from_user.id),
+                first_name=m.from_user.first_name or "User",
+                file_name=file_name,
+                file_hash=file_hash,
+                file_size=int(file_size or 0),
+                stream_code=stream_code,
+                stream_link=stream_link,
+                is_owner=is_owner,
+                is_video=is_video,
+                mime_type=mime_type,
+                caption=m.caption,
+            )
+        )
     except FloodWait as e:
         print(f"Sleeping for {str(e.x)}s")
         await asyncio.sleep(e.x)

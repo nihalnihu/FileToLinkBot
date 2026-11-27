@@ -559,16 +559,17 @@ async def auto_clean_filename_with_ai(
                     if refreshed:
                         original_language = refreshed
 
-        # 3. If language wasn't in filename, check fast video file metadata (audio tracks)
+        # 3. Check audio track metadata FIRST (fast 7s header probe in background)
         probed_tracks = None
-        if not language and msg_id is not None and file_hash:
+        meta_language = None
+        if msg_id is not None and file_hash:
             try:
                 local_url = build_local_stream_url(int(msg_id), raw, str(file_hash))
                 summary = await probe_media_summary(local_url, timeout=7.0)
                 tracks = summary.get("audio_tracks") or []
                 if tracks:
                     probed_tracks = tracks
-                    language = extract_languages_from_tracks(tracks)
+                    meta_language = extract_languages_from_tracks(tracks)
                 if not quality:
                     quality = quality_from_video_height(
                         int(summary.get("video_height") or 0)
@@ -576,8 +577,18 @@ async def auto_clean_filename_with_ai(
             except Exception:
                 pass
 
-        # 4. If metadata also had no language (or was 'und'), fall back to exact original language
-        if not language:
+        # 4. Priority for language: Audio Metadata -> Filename -> TMDB/AI Original Language
+        # (If a dual-audio MKV left one track untagged 'und' while filename lists more,
+        #  keep the fuller filename language list.)
+        filename_lang_str = language
+        if meta_language:
+            meta_count = len([x for x in meta_language.split(",") if x.strip()])
+            file_count = len([x for x in (filename_lang_str or "").split(",") if x.strip()])
+            if filename_lang_str and file_count > meta_count and probed_tracks and len(probed_tracks) > meta_count:
+                language = filename_lang_str
+            else:
+                language = meta_language
+        elif not language:
             if not original_language:
                 original_language = await _fetch_original_language_from_ai(
                     session,
