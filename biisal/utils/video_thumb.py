@@ -36,6 +36,7 @@ _VIDEO_HEADER_RE = re.compile(
     r"^\s*Stream\s+#0:(\d+)(?:\([^)]+\))?:\s*Video:\s*([^,\s(]+)",
     re.IGNORECASE,
 )
+_VIDEO_DIM_RE = re.compile(r",\s*(\d{3,4})x(\d{3,4})\b")
 _AUDIO_HEADER_RE = re.compile(
     r"^\s*Stream\s+#0:(\d+)(?:\(([^)]+)\))?:\s*Audio:\s*(.+)$",
     re.IGNORECASE,
@@ -45,11 +46,12 @@ _META_TITLE_RE = re.compile(r"^\s*title\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
 async def probe_media_summary(stream_url: str, timeout: float = 8.0) -> Dict:
-    """Probes duration, video codec, and audio tracks in a single ffmpeg pass."""
+    """Probes duration, video codec, height, and audio tracks in a single ffmpeg pass."""
     ffmpeg_exe = _resolve_ffmpeg_exe()
     summary: Dict = {
         "duration": 0,
         "video_codec": "",
+        "video_height": 0,
         "audio_tracks": [],
     }
     if not ffmpeg_exe or not stream_url:
@@ -101,6 +103,10 @@ async def probe_media_summary(stream_url: str, timeout: float = 8.0) -> Dict:
                 m_vid = _VIDEO_HEADER_RE.match(line)
                 if m_vid:
                     summary["video_codec"] = m_vid.group(2).strip().lower()
+                    m_dim = _VIDEO_DIM_RE.search(line)
+                    if m_dim:
+                        with contextlib.suppress(ValueError):
+                            summary["video_height"] = int(m_dim.group(2))
                     current_track = None
                     in_metadata = False
                     continue

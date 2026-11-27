@@ -13,6 +13,7 @@ import mimetypes
 from urllib.parse import quote_plus
 from aiohttp import web
 from aiohttp.http_exceptions import BadStatusLine
+from pyrogram import enums
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from biisal.bot import multi_clients, work_loads, StreamBot
@@ -617,6 +618,7 @@ async def _run_broadcast_job(
     text: str,
     user_ids: list,
     reply_markup: InlineKeyboardMarkup = None,
+    parse_mode: enums.ParseMode = enums.ParseMode.MARKDOWN,
 ):
     job = _broadcast_jobs.get(job_id)
     if not job:
@@ -625,14 +627,20 @@ async def _run_broadcast_job(
         for uid in user_ids:
             try:
                 await StreamBot.send_message(
-                    chat_id=uid, text=text, reply_markup=reply_markup
+                    chat_id=uid,
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
                 )
                 job["sent"] += 1
             except FloodWait as fw:
                 await asyncio.sleep(min(int(fw.value), 30))
                 try:
                     await StreamBot.send_message(
-                        chat_id=uid, text=text, reply_markup=reply_markup
+                        chat_id=uid,
+                        text=text,
+                        reply_markup=reply_markup,
+                        parse_mode=parse_mode,
                     )
                     job["sent"] += 1
                 except Exception:
@@ -658,8 +666,9 @@ def _parse_broadcast_markup(payload: dict):
                 "url": payload.get("button_url"),
             }
         )
-    rows = []
-    for entry in candidates[:8]:
+    grouped_rows = []
+    row_index_map = {}
+    for entry in candidates[:12]:
         if not isinstance(entry, dict):
             continue
         label = str(entry.get("text") or "").strip()
@@ -673,8 +682,23 @@ def _parse_broadcast_markup(payload: dict):
             or low_url.startswith("tg://")
         ):
             continue
-        rows.append([InlineKeyboardButton(label[:64], url=url)])
-    return InlineKeyboardMarkup(rows) if rows else None
+        btn = InlineKeyboardButton(label[:64], url=url)
+        raw_row = entry.get("row")
+        if isinstance(raw_row, int) or (isinstance(raw_row, str) and raw_row.isdigit()):
+            row_key = int(raw_row)
+            if row_key not in row_index_map:
+                row_index_map[row_key] = len(grouped_rows)
+                grouped_rows.append([])
+            target_row = grouped_rows[row_index_map[row_key]]
+            if len(target_row) < 4:
+                target_row.append(btn)
+            else:
+                grouped_rows.append([btn])
+        elif entry.get("same_row") and grouped_rows and len(grouped_rows[-1]) < 4:
+            grouped_rows[-1].append(btn)
+        else:
+            grouped_rows.append([btn])
+    return InlineKeyboardMarkup(grouped_rows) if grouped_rows else None
 
 
 @routes.post("/api/admin/broadcast")
@@ -687,6 +711,12 @@ async def admin_broadcast_handler(request: web.Request):
         if not text:
             return web.json_response({"ok": False, "error": "Message cannot be empty"}, status=400)
         reply_markup = _parse_broadcast_markup(payload) if isinstance(payload, dict) else None
+        raw_mode = str((payload.get("parse_mode") if isinstance(payload, dict) else "") or "markdown").strip().lower()
+        parse_mode = (
+            enums.ParseMode.DISABLED
+            if raw_mode in ("plain", "none", "disabled")
+            else enums.ParseMode.MARKDOWN
+        )
 
         users_cursor = await _video_db.get_all_users()
         user_ids = []
@@ -705,7 +735,11 @@ async def admin_broadcast_handler(request: web.Request):
         if user_ids:
             asyncio.create_task(
                 _run_broadcast_job(
-                    job_id, text, user_ids, reply_markup=reply_markup
+                    job_id,
+                    text,
+                    user_ids,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
                 )
             )
 

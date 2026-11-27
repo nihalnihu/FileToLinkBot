@@ -19,7 +19,23 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from biisal.utils.file_properties import get_name, get_hash, get_media_file_size, get_media_from_message
 from biisal.utils.firebase_config import get_mrdb_download_url
 from biisal.utils.video_thumb import build_local_stream_url, extract_frame_10min
+from biisal.utils.ai_cleaner import auto_clean_filename_with_ai
 db = Database(Var.DATABASE_URL, Var.name)
+
+
+async def _auto_clean_video_metadata(msg_id: int, file_name: str, file_hash: str):
+    if os.environ.get("AUTO_AI_RENAME", "true").strip().lower() in ("0", "false", "no"):
+        return
+    try:
+        updates = await auto_clean_filename_with_ai(
+            file_name,
+            msg_id=msg_id,
+            file_hash=file_hash,
+        )
+        if updates:
+            await db.update_video_metadata(str(msg_id), updates)
+    except Exception as exc:
+        print(f"Background AI metadata clean failed for {msg_id}: {exc}")
 
 
 async def _capture_and_store_thumbnail(msg_id: int, file_name: str, file_hash: str):
@@ -166,6 +182,11 @@ async def private_receive_handler(c: Client, m: Message):
                 )
                 asyncio.create_task(
                     _capture_and_store_thumbnail(
+                        int(log_msg.id), file_name, file_hash
+                    )
+                )
+                asyncio.create_task(
+                    _auto_clean_video_metadata(
                         int(log_msg.id), file_name, file_hash
                     )
                 )

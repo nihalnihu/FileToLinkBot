@@ -55,3 +55,5 @@ class Var(object):
     FIREBASE_PROJECT_ID = str(getenv('FIREBASE_PROJECT_ID', 'fire-fa173'))
     MRDB_APP_URL = str(getenv('MRDB_APP_URL', ''))
     OWNER_ADMIN_KEY = str(getenv('OWNER_ADMIN_KEY', 'mrdb-owner-admin'))
+    GEMINI_API_KEY = str(getenv('GEMINI_API_KEY', ''))
+    AUTO_AI_RENAME = _parse_bool(getenv('AUTO_AI_RENAME'), True)
