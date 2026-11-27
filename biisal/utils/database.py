@@ -105,8 +105,11 @@ class Database:
         tmdb_id: int = None,
         limit: int = 20,
         skip: int = 0,
+        include_hidden: bool = False,
     ):
         query = {}
+        if not include_hidden:
+            query["hidden_for_users"] = {"$ne": True}
         if tmdb_id is not None:
             query["tmdb_id"] = int(tmdb_id)
         if query_text and query_text.strip():
@@ -116,6 +119,9 @@ class Database:
                 {"title": pattern},
                 {"file_name": pattern},
                 {"stream_code": pattern},
+                {"tmdb_title": pattern},
+                {"language": pattern},
+                {"quality": pattern},
             ]
         max_items = max(1, min(int(limit), 100))
         offset = max(0, int(skip))
@@ -148,6 +154,118 @@ class Database:
             {"stream_code": {"$regex": f"^{re.escape(raw)}$", "$options": "i"}},
             {"_id": 0},
         )
+
+    async def get_video_duration(self, msg_id: int) -> int:
+        doc = await self.videos.find_one(
+            {"msg_id": int(msg_id)}, {"_id": 0, "duration": 1}
+        )
+        if doc and doc.get("duration"):
+            try:
+                return max(0, int(doc["duration"]))
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    async def save_video_duration(self, msg_id: int, duration_seconds: int):
+        dur = max(0, int(duration_seconds or 0))
+        if dur <= 0:
+            return
+        await self.videos.update_one(
+            {"msg_id": int(msg_id)},
+            {"$set": {"duration": dur}},
+        )
+
+    async def get_video_by_identifier(self, identifier: str):
+        raw = (identifier or "").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            doc = await self.videos.find_one({"msg_id": int(raw)}, {"_id": 0})
+            if doc:
+                return doc
+        return await self.get_video_by_code(raw)
+
+    async def save_audio_tracks(self, msg_id: int, tracks: list):
+        if not isinstance(tracks, list):
+            return
+        await self.videos.update_one(
+            {"msg_id": int(msg_id)},
+            {"$set": {"audio_tracks": tracks}},
+        )
+
+    async def update_video_metadata(self, identifier: str, updates: dict):
+        doc = await self.get_video_by_identifier(identifier)
+        if not doc or doc.get("msg_id") is None:
+            return None
+
+        msg_id = int(doc["msg_id"])
+        set_fields = {}
+        unset_fields = {}
+
+        if "title" in updates:
+            val = str(updates["title"] or "").strip()
+            if val:
+                set_fields["title"] = val
+                set_fields["metadata_edited"] = True
+
+        for str_key in ("quality", "language", "overview"):
+            if str_key in updates:
+                val = str(updates[str_key] or "").strip()
+                if val:
+                    set_fields[str_key] = val
+                else:
+                    unset_fields[str_key] = ""
+
+        if "year" in updates:
+            raw_y = updates["year"]
+            if raw_y is None or str(raw_y).strip() == "":
+                unset_fields["year"] = ""
+            else:
+                try:
+                    yr = int(raw_y)
+                    if 1900 <= yr <= 2100:
+                        set_fields["year"] = yr
+                except (TypeError, ValueError):
+                    pass
+
+        if "disabled_audio_indices" in updates:
+            raw_list = updates["disabled_audio_indices"] or []
+            clean_indices = sorted(
+                {int(x) for x in raw_list if isinstance(x, int) or str(x).isdigit()}
+            )
+            set_fields["disabled_audio_indices"] = clean_indices
+
+        if "audio_tracks" in updates and isinstance(updates["audio_tracks"], list):
+            set_fields["audio_tracks"] = updates["audio_tracks"]
+
+        if "hidden_for_users" in updates:
+            set_fields["hidden_for_users"] = bool(updates["hidden_for_users"])
+
+        if "tmdb_id" in updates:
+            raw_tmdb = updates["tmdb_id"]
+            if raw_tmdb is None or str(raw_tmdb).strip() == "":
+                for k in ("tmdb_id", "tmdb_title", "tmdb_poster", "tmdb_year"):
+                    unset_fields[k] = ""
+            else:
+                try:
+                    set_fields["tmdb_id"] = int(raw_tmdb)
+                    for tk in ("tmdb_title", "tmdb_poster", "tmdb_year"):
+                        if tk in updates:
+                            tv = str(updates[tk] or "").strip()
+                            if tv:
+                                set_fields[tk] = tv
+                            else:
+                                unset_fields[tk] = ""
+                except (TypeError, ValueError):
+                    pass
+
+        set_fields["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+        op = {"$set": set_fields}
+        if unset_fields:
+            op["$unset"] = unset_fields
+
+        await self.videos.update_one({"msg_id": msg_id}, op)
+        return await self.videos.find_one({"msg_id": msg_id}, {"_id": 0})
 
     async def save_thumbnail(self, msg_id: int, jpeg_bytes: bytes):
         if not jpeg_bytes:

@@ -61,12 +61,9 @@ def _parse_video_caption(caption: Optional[str], file_name: str):
             tmdb_id = int(m_tmdb.group(1))
         except ValueError:
             tmdb_id = None
-        raw = (raw[: m_tmdb.start()] + raw[m_tmdb.end() :]).strip()
 
-    clean_title = re.sub(r"\s+", " ", raw).strip(" -|:\n\t")
-    if not clean_title:
-        base_name = os.path.splitext(file_name or "Untitled Video")[0]
-        clean_title = re.sub(r"[._]+", " ", base_name).strip() or "Untitled Video"
+    # Always use the actual file name (never Telegram caption text) as default title.
+    clean_title = (file_name or "").strip() or "Untitled Video"
     return clean_title, tmdb_id
 
 

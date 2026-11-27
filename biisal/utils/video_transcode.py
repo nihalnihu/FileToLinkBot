@@ -51,6 +51,8 @@ async def stream_transcoded_video(
     secure_hash: str,
     target_height: int,
     start_seconds: int = 0,
+    output_format: str = "matroska",
+    audio_stream_index: int = 0,
 ) -> web.StreamResponse:
     ffmpeg_exe = _resolve_ffmpeg_exe()
     if not ffmpeg_exe:
@@ -62,12 +64,17 @@ async def stream_transcoded_video(
 
     source_url = build_local_stream_url(msg_id, file_name, secure_hash)
     seek_sec = max(0, int(start_seconds))
+    is_mp4 = (output_format or "").strip().lower() == "mp4"
 
     cmd = [
         ffmpeg_exe,
         "-y",
         "-loglevel",
         "error",
+        "-analyzeduration",
+        "1500000",
+        "-probesize",
+        "1500000",
         "-reconnect",
         "1",
         "-reconnect_streamed",
@@ -77,6 +84,7 @@ async def stream_transcoded_video(
     ]
     if seek_sec > 0:
         cmd.extend(["-ss", str(seek_sec)])
+    audio_idx = max(0, int(audio_stream_index or 0))
     cmd.extend(
         [
             "-i",
@@ -84,7 +92,7 @@ async def stream_transcoded_video(
             "-map",
             "0:v:0",
             "-map",
-            "0:a:0?",
+            f"0:a:{audio_idx}?",
             "-vf",
             f"scale=-2:{target_height}",
             "-c:v",
@@ -101,6 +109,10 @@ async def stream_transcoded_video(
             profile["bufsize"],
             "-pix_fmt",
             "yuv420p",
+            "-g",
+            "48",
+            "-keyint_min",
+            "48",
             "-threads",
             "2",
             "-c:a",
@@ -109,19 +121,32 @@ async def stream_transcoded_video(
             profile["audio_bitrate"],
             "-ac",
             "2",
-            "-f",
-            "matroska",
-            "pipe:1",
+            "-flush_packets",
+            "1",
         ]
     )
+    if is_mp4:
+        cmd.extend(
+            [
+                "-f",
+                "mp4",
+                "-movflags",
+                "frag_keyframe+empty_moov+default_base_moof",
+                "-frag_duration",
+                "1000000",
+                "pipe:1",
+            ]
+        )
+    else:
+        cmd.extend(["-f", "matroska", "pipe:1"])
 
     resp = web.StreamResponse(
         status=200,
         headers={
-            "Content-Type": "video/x-matroska",
+            "Content-Type": "video/mp4" if is_mp4 else "video/x-matroska",
             "Accept-Ranges": "none",
             "Cache-Control": "no-store",
-            "X-Stream-Mode": f"transcoded-{target_height}p",
+            "X-Stream-Mode": f"transcoded-{target_height}p-{'mp4' if is_mp4 else 'mkv'}",
         },
     )
 
@@ -132,6 +157,7 @@ async def stream_transcoded_video(
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

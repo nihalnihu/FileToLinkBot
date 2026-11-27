@@ -20,9 +20,18 @@ from ..utils.time_format import get_readable_time
 from ..utils.custom_dl import ByteStreamer, yield_striped_file
 from ..utils.database import Database
 from ..utils.file_properties import get_hash, get_name
-from ..utils.video_thumb import build_local_stream_url, extract_frame_10min
+from ..utils.video_thumb import (
+    build_local_stream_url,
+    extract_frame_10min,
+    probe_audio_tracks,
+    probe_duration_seconds,
+)
 from ..utils.video_transcode import TRANSCODE_PROFILES, stream_transcoded_video
-from biisal.utils.render_template import render_page
+from biisal.utils.render_template import (
+    get_cached_duration,
+    render_page,
+    set_cached_duration,
+)
 from biisal.vars import Var
 
 
@@ -64,15 +73,34 @@ def _format_video_row(row: dict, base_url: str) -> dict:
     stream_code = row.get("stream_code") or (
         f"MRDB-{msg_id}-{secure_hash.upper()}" if msg_id is not None and secure_hash else ""
     )
+    disabled_audio = [
+        int(x)
+        for x in (row.get("disabled_audio_indices") or [])
+        if isinstance(x, int) or str(x).isdigit()
+    ]
+    metadata_edited = bool(row.get("metadata_edited"))
+    edited_title = (row.get("title") or "").strip()
+    display_title = edited_title if (metadata_edited and edited_title) else file_name
     return {
         "msg_id": msg_id,
         "hash": secure_hash,
         "stream_code": stream_code,
-        "title": row.get("title") or file_name,
+        "title": display_title,
         "file_name": file_name,
         "file_size": row.get("file_size", 0),
         "mime_type": row.get("mime_type") or "video/x-matroska",
         "tmdb_id": row.get("tmdb_id"),
+        "tmdb_title": row.get("tmdb_title"),
+        "tmdb_poster": row.get("tmdb_poster"),
+        "tmdb_year": row.get("tmdb_year"),
+        "year": row.get("year"),
+        "quality": row.get("quality"),
+        "language": row.get("language"),
+        "overview": row.get("overview"),
+        "metadata_edited": metadata_edited,
+        "hidden_for_users": bool(row.get("hidden_for_users")),
+        "disabled_audio_indices": disabled_audio,
+        "audio_tracks": row.get("audio_tracks") or [],
         "created_at": row.get("created_at"),
         "stream_url": f"{base_url}{msg_id}/{quoted_name}?hash={secure_hash}",
         "watch_url": f"{base_url}watch/{msg_id}/{quoted_name}?hash={secure_hash}",
@@ -152,6 +180,48 @@ async def get_thumbnail_handler(request: web.Request):
         return web.Response(status=500, text=str(e))
 
 
+@routes.get(r"/api/duration/{id:\d+}", allow_head=True)
+async def get_duration_handler(request: web.Request):
+    msg_id = int(request.match_info["id"])
+    cached = get_cached_duration(msg_id)
+    if cached > 0:
+        return web.json_response({"ok": True, "duration": cached})
+    try:
+        db_dur = await _video_db.get_video_duration(msg_id)
+        if db_dur > 0:
+            set_cached_duration(msg_id, db_dur)
+            return web.json_response({"ok": True, "duration": db_dur})
+
+        row = await _video_db.videos.find_one(
+            {"msg_id": msg_id}, {"_id": 0, "file_name": 1, "hash": 1}
+        )
+        file_name = row.get("file_name") if row else None
+        file_hash = (row.get("hash") if row else None) or (
+            request.rel_url.query.get("hash") or ""
+        ).strip()
+        if not file_hash:
+            index = min(work_loads, key=work_loads.get)
+            faster_client = multi_clients[index]
+            message = await faster_client.get_messages(Var.BIN_CHANNEL, msg_id)
+            if message and not message.empty:
+                file_name = file_name or get_name(message) or f"video_{msg_id}.mkv"
+                file_hash = get_hash(message)
+        if not file_hash:
+            return web.json_response({"ok": False, "duration": 0})
+
+        local_url = build_local_stream_url(
+            msg_id, file_name or f"video_{msg_id}.mkv", file_hash
+        )
+        dur = await probe_duration_seconds(local_url, timeout=12.0)
+        if dur > 0:
+            set_cached_duration(msg_id, dur)
+            await _video_db.save_video_duration(msg_id, dur)
+        return web.json_response({"ok": dur > 0, "duration": dur})
+    except Exception as e:
+        logging.debug(f"Duration API error for {msg_id}: {e}")
+        return web.json_response({"ok": False, "duration": 0})
+
+
 @routes.get(r"/transcode/{msg_id:\d+}/{quality:\d+p?}", allow_head=True)
 async def transcode_video_handler(request: web.Request):
     try:
@@ -164,6 +234,9 @@ async def transcode_video_handler(request: web.Request):
         secure_hash = (request.rel_url.query.get("hash") or "").strip()
         ss_raw = (request.rel_url.query.get("ss") or "0").strip()
         start_seconds = int(ss_raw) if ss_raw.isdigit() else 0
+        fmt = (request.rel_url.query.get("fmt") or "matroska").strip().lower()
+        if fmt not in ("mp4", "matroska"):
+            fmt = "matroska"
 
         index = min(work_loads, key=work_loads.get)
         faster_client = multi_clients[index]
@@ -180,13 +253,33 @@ async def transcode_video_handler(request: web.Request):
             return web.Response(
                 status=200,
                 headers={
-                    "Content-Type": "video/x-matroska",
+                    "Content-Type": "video/mp4" if fmt == "mp4" else "video/x-matroska",
                     "Accept-Ranges": "none",
                     "Cache-Control": "no-store",
                 },
             )
 
         file_name = file_id.file_name or f"video_{msg_id}.mkv"
+        audio_stream_index = 0
+        try:
+            row = await _video_db.videos.find_one(
+                {"msg_id": msg_id},
+                {"_id": 0, "disabled_audio_indices": 1, "audio_tracks": 1},
+            )
+            disabled = {
+                int(x)
+                for x in ((row or {}).get("disabled_audio_indices") or [])
+                if isinstance(x, int) or str(x).isdigit()
+            }
+            if disabled:
+                tracks = (row or {}).get("audio_tracks") or []
+                total = len(tracks) if tracks else 8
+                for candidate in range(total):
+                    if candidate not in disabled:
+                        audio_stream_index = candidate
+                        break
+        except Exception:
+            audio_stream_index = 0
         return await stream_transcoded_video(
             request=request,
             msg_id=msg_id,
@@ -194,6 +287,8 @@ async def transcode_video_handler(request: web.Request):
             secure_hash=secure_hash,
             target_height=target_height,
             start_seconds=start_seconds,
+            output_format=fmt,
+            audio_stream_index=audio_stream_index,
         )
     except FIleNotFound as e:
         return web.Response(status=404, text=e.message)
@@ -224,11 +319,16 @@ async def list_videos_handler(request: web.Request):
             or "0"
         )
         offset = int(offset_raw) if offset_raw.isdigit() else 0
+        include_hidden = _is_owner_request(request) and (
+            (request.rel_url.query.get("include_hidden") or "").strip().lower()
+            in ("1", "true", "yes")
+        )
         rows = await _video_db.get_videos(
             query_text=query_text,
             tmdb_id=tmdb_id,
             limit=limit,
             skip=offset,
+            include_hidden=include_hidden,
         )
         base_url = _resolve_base_url(request)
 
@@ -282,8 +382,74 @@ async def resolve_code_handler(request: web.Request):
                 {"ok": False, "error": "Invalid or unknown stream code"},
                 status=404,
             )
+        if row.get("hidden_for_users") and not _is_owner_request(request):
+            return web.json_response(
+                {"ok": False, "error": "This stream is currently private"},
+                status=404,
+            )
         base_url = _resolve_base_url(request)
         return web.json_response({"ok": True, "video": _format_video_row(row, base_url)})
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.get(r"/api/videos/{identifier:\S+}/tracks", allow_head=True)
+async def get_video_tracks_handler(request: web.Request):
+    try:
+        identifier = request.match_info.get("identifier", "").strip()
+        row = await _video_db.get_video_by_identifier(identifier)
+        if not row or row.get("msg_id") is None or not row.get("hash"):
+            return web.json_response({"ok": False, "error": "Video not found"}, status=404)
+
+        msg_id = int(row["msg_id"])
+        force_refresh = (request.rel_url.query.get("refresh") or "").strip() in ("1", "true")
+        tracks = row.get("audio_tracks") or []
+        if force_refresh or not tracks:
+            local_url = build_local_stream_url(
+                msg_id,
+                row.get("file_name") or f"video_{msg_id}.mkv",
+                row["hash"],
+            )
+            probed = await probe_audio_tracks(local_url, timeout=20.0)
+            if probed:
+                tracks = probed
+                await _video_db.save_audio_tracks(msg_id, tracks)
+
+        disabled = [
+            int(x)
+            for x in (row.get("disabled_audio_indices") or [])
+            if isinstance(x, int) or str(x).isdigit()
+        ]
+        return web.json_response(
+            {
+                "ok": True,
+                "audio_tracks": tracks,
+                "disabled_audio_indices": disabled,
+            }
+        )
+    except Exception as e:
+        logging.error(f"Audio track inspect error: {e}")
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.patch(r"/api/admin/videos/{identifier:\S+}")
+@routes.post(r"/api/admin/videos/{identifier:\S+}")
+async def admin_update_video_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    try:
+        identifier = request.match_info.get("identifier", "").strip()
+        if not identifier:
+            return web.json_response({"ok": False, "error": "Missing identifier"}, status=400)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            return web.json_response({"ok": False, "error": "Invalid JSON body"}, status=400)
+        updated = await _video_db.update_video_metadata(identifier, payload)
+        if not updated:
+            return web.json_response({"ok": False, "error": "Video not found"}, status=404)
+        base_url = _resolve_base_url(request)
+        return web.json_response({"ok": True, "video": _format_video_row(updated, base_url)})
     except Exception as e:
         logging.critical(e.with_traceback(None))
         return web.json_response({"ok": False, "error": str(e)}, status=500)
@@ -580,6 +746,50 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
     last_part_cut = until_bytes % chunk_size + 1
 
     req_length = until_bytes - from_bytes + 1
+    is_head = request.method.upper() == "HEAD"
+    is_download = (
+        (request.rel_url.query.get("dl") or request.rel_url.query.get("download") or "")
+        .strip()
+        .lower()
+        in ("1", "true", "yes")
+    )
+
+    mime_type = file_id.mime_type
+    file_name = file_id.file_name
+    disposition = "attachment" if is_download else "inline"
+
+    if mime_type:
+        if not file_name:
+            try:
+                file_name = f"{secrets.token_hex(2)}.{mime_type.split('/')[1]}"
+            except (IndexError, AttributeError):
+                file_name = f"{secrets.token_hex(2)}.unknown"
+    else:
+        if file_name:
+            guessed_mime, _ = mimetypes.guess_type(file_name)
+            if not guessed_mime and file_name.lower().endswith(".mkv"):
+                mime_type = "video/x-matroska"
+            else:
+                mime_type = guessed_mime or "application/octet-stream"
+        else:
+            mime_type = "application/octet-stream"
+            file_name = f"{secrets.token_hex(2)}.unknown"
+
+    headers = {
+        "Content-Type": f"{mime_type}",
+        "Content-Length": str(req_length),
+        "Content-Disposition": f'{disposition}; filename="{file_name}"',
+        "Accept-Ranges": "bytes",
+    }
+    if range_header:
+        headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+
+    if is_head:
+        return web.Response(
+            status=206 if range_header else 200,
+            headers=headers,
+        )
+
     part_count = math.ceil(until_bytes / chunk_size) - math.floor(offset / chunk_size)
     if len(multi_clients) > 1 and part_count >= 3:
         streamers_by_index = {
@@ -604,35 +814,8 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
             file_id, index, offset, first_part_cut, last_part_cut, part_count, chunk_size
         )
 
-    mime_type = file_id.mime_type
-    file_name = file_id.file_name
-    disposition = "attachment"
-
-    if mime_type:
-        if not file_name:
-            try:
-                file_name = f"{secrets.token_hex(2)}.{mime_type.split('/')[1]}"
-            except (IndexError, AttributeError):
-                file_name = f"{secrets.token_hex(2)}.unknown"
-    else:
-        if file_name:
-            guessed_mime, _ = mimetypes.guess_type(file_name)
-            if not guessed_mime and file_name.lower().endswith(".mkv"):
-                mime_type = "video/x-matroska"
-            else:
-                mime_type = guessed_mime or "application/octet-stream"
-        else:
-            mime_type = "application/octet-stream"
-            file_name = f"{secrets.token_hex(2)}.unknown"
-
     return web.Response(
         status=206 if range_header else 200,
         body=body,
-        headers={
-            "Content-Type": f"{mime_type}",
-            "Content-Range": f"bytes {from_bytes}-{until_bytes}/{file_size}",
-            "Content-Length": str(req_length),
-            "Content-Disposition": f'{disposition}; filename="{file_name}"',
-            "Accept-Ranges": "bytes",
-        },
+        headers=headers,
     )

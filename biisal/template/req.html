@@ -1,461 +1,1405 @@
-
-
-
-
 <!DOCTYPE html>
-
 <html lang="en">
-
-
-
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MRDb • {{ file_name }}</title>
+  <style>
+    :root {
+      --bg: #05070e;
+      --card: rgba(16, 20, 31, 0.9);
+      --card-solid: #10141f;
+      --surface: #171d2e;
+      --surface-hover: #1e263c;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.14);
+      --accent: #00e5a0;
+      --cyan: #00b0ff;
+      --gold: #f5c451;
+      --violet: #7c5cff;
+      --text: #f5f7fa;
+      --muted: #939db2;
+    }
 
-    <meta charset="UTF-8">
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    body {
+      background:
+        radial-gradient(circle at 15% 0%, rgba(124, 92, 255, 0.16), transparent 40%),
+        radial-gradient(circle at 88% 8%, rgba(0, 229, 160, 0.13), transparent 36%),
+        var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      padding: 16px 14px 36px;
+      display: flex;
+      justify-content: center;
+    }
 
-    <title>Tamil Rockers | {{file_name}}</title>
+    .wrap {
+      width: 100%;
+      max-width: 920px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
 
-    <link rel="stylesheet" href="https://unpkg.com/sheryjs/dist/Shery.css" />
+    /* Glass Top Navbar */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 10px 14px;
+      backdrop-filter: blur(14px);
+    }
 
-    <link rel="stylesheet" href="https://biisal.github.io/Resources/StreamCSS.css">
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+    }
 
-    <link rel="stylesheet" href="https://biisal.github.io/Resources/playerCss.css">
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 11px;
+      background: linear-gradient(135deg, var(--gold), var(--accent));
+      color: #04140f;
+      display: grid;
+      place-items: center;
+      font-size: 15px;
+      font-weight: 900;
+      box-shadow: 0 6px 18px rgba(0, 229, 160, 0.24);
+    }
 
-    <link rel="preconnect" href="https://fonts.googleapis.com">
+    .brand-title {
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0.2px;
+      line-height: 1.1;
+    }
 
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    .brand-title span { color: var(--accent); }
 
-    <link href="https://fonts.googleapis.com/css2?family=Josefin+Sans:wght@500;700&display=swap" rel="stylesheet">
+    .brand-sub {
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 500;
+    }
 
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css"
+    .nav-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #0b0e17;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px;
+    }
 
-        integrity="sha512-z3gLpd7yknf1YoNbCzqRKc4qyor8gaKU1qmn+CShxbuBusANI9QpRohGBreCFkKxLhei6S9CQXFEbbKuqLg0DA=="
+    .nav-tab {
+      background: transparent;
+      color: var(--muted);
+      border: none;
+      border-radius: 999px;
+      padding: 7px 14px;
+      font-size: 12.5px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.18s ease;
+    }
 
-        crossorigin="anonymous" referrerpolicy="no-referrer" />
+    .nav-tab:hover { color: var(--text); }
 
-    <script src="https://cdn.tailwindcss.com"></script>
+    .nav-tab.active {
+      background: rgba(0, 229, 160, 0.16);
+      color: var(--accent);
+      box-shadow: inset 0 0 0 1px rgba(0, 229, 160, 0.35);
+    }
 
+    .top-dl {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      text-decoration: none;
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 12.5px;
+      font-weight: 700;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
 
+    .top-dl:hover {
+      border-color: rgba(0, 229, 160, 0.45);
+      transform: translateY(-1px);
+    }
 
-</head>
+    /* Tab Panes (keeps video alive across tab switches) */
+    .tab-pane { display: none; flex-direction: column; gap: 14px; animation: fadeIn 0.2s ease; }
+    .tab-pane.active { display: flex; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
-<body>
+    /* Player Theater Card */
+    .player-card {
+      background: var(--card-solid);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      overflow: hidden;
+      box-shadow: 0 22px 54px rgba(0, 0, 0, 0.6);
+    }
 
-    <nav>
+    .video-box {
+      position: relative;
+      background: #000;
+      aspect-ratio: 16 / 9;
+      width: 100%;
+      overflow: hidden;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
 
-        <div class="nleft">
+    .video-box:fullscreen {
+      aspect-ratio: auto;
+      width: 100vw;
+      height: 100vh;
+    }
 
-            <a href="https://t.me/MV_Rockers">
+    video {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+      object-fit: contain;
+    }
 
-                
-                <h3 id="heading" style="z-index: 10%;color:lightblue;hight:50px;" class="magnet">Tamil Rockers</h3>
+    .center-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      pointer-events: none;
+    }
 
-            </a>
+    .center-play-btn {
+      pointer-events: auto;
+      width: 58px;
+      height: 58px;
+      border-radius: 50%;
+      border: 1.5px solid rgba(255, 255, 255, 0.24);
+      background: rgba(8, 11, 20, 0.68);
+      color: #ffffff;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+      transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease, opacity 0.2s ease;
+    }
 
-        </div>
+    .center-play-btn:hover {
+      transform: scale(1.06);
+      border-color: var(--accent);
+      background: rgba(0, 229, 160, 0.18);
+      color: var(--accent);
+    }
 
-        <div class="nryt">
+    .center-play-btn.hidden { opacity: 0; pointer-events: none; position: absolute; }
 
-            <a class="home-btn magnet" href="#main" onclick="toggleWidthnav(this)" style="color:lightblue;">HOME</a>
+    .svg-icon {
+      display: block;
+      width: 1em;
+      height: 1em;
+      fill: currentColor;
+      flex-shrink: 0;
+    }
 
+    .svg-stroke {
+      display: block;
+      width: 1em;
+      height: 1em;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.1;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex-shrink: 0;
+    }
 
+    .buffer-box {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 9px;
+    }
 
-            <a href="#sec1" class="about-btn magnet" onclick="toggleWidthnav(this)" style="color:lightblue;">ABOUT</a>
+    .buffer-box.visible { display: flex; }
 
-        </div>
+    .spinner {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 3px solid rgba(255, 255, 255, 0.16);
+      border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+    }
 
-    </nav>
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-    <center>
+    .buffer-label {
+      background: rgba(6, 8, 15, 0.82);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text);
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 5px 12px;
+      border-radius: 999px;
+      backdrop-filter: blur(6px);
+    }
 
-        <div class="about-nav">
+    .skip-toast {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(6, 8, 15, 0.84);
+      border: 1px solid rgba(0, 229, 160, 0.45);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+      padding: 8px 14px;
+      border-radius: 999px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+    }
 
-            <a href="#sec1" class="wlcm magnet" onclick="toggleWidth(this)"style="color:lightblue;">Wᴇʟᴄᴏᴍᴇ</a>
+    .skip-toast.left { left: 15%; }
+    .skip-toast.right { right: 15%; }
+    .skip-toast.visible { opacity: 1; }
 
-            <a href="#sec2" class="abt-chnl magnet" onclick="toggleWidth(this)"style="color:lightblue;">Cʜᴀɴɴᴇʟs</a>
+    .hud-bottom {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 30px 14px 10px;
+      background: linear-gradient(to top, rgba(5, 7, 14, 0.95), rgba(5, 7, 14, 0.58) 62%, transparent);
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      transition: opacity 0.22s ease;
+    }
 
-            <a href="#sec3" class="magnet bot-btn" onclick="toggleWidth(this) , bot_btn_clicked()"style="color:lightblue;">Bᴏsᴛ</a>
+    .hud-bottom.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
 
-            <a href="#sec4" class="magnet contact-btn" onclick="toggleWidth(this)"style="color:lightblue;">Cᴏɴᴅᴀᴄᴛ Mᴇ</a>
+    .timeline-container {
+      position: relative;
+      display: flex;
+      align-items: center;
+      padding: 4px 0;
+    }
 
-        </div>
+    .seek-tooltip {
+      position: absolute;
+      bottom: 20px;
+      transform: translateX(-50%);
+      background: #0c101b;
+      border: 1px solid rgba(0, 229, 160, 0.45);
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 800;
+      padding: 3px 8px;
+      border-radius: 7px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.12s ease;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
 
-    </center>
+    .seek-tooltip.visible { opacity: 1; }
 
- 
+    .seek-range {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 5px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.22);
+      outline: none;
+      cursor: pointer;
+    }
 
+    .seek-range::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 10px rgba(0, 229, 160, 0.8);
+      cursor: pointer;
+    }
 
-    <div class="outer">
+    .seek-range::-moz-range-thumb {
+      width: 15px;
+      height: 15px;
+      border: none;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
 
-        <div class="inner">
+    .hud-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
 
-            <div class="main" id="main">
+    .hud-left, .hud-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
 
-                <video id="player" class="player" src="{{file_url}}" type="video/mp4" playsinline controls
+    .hud-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.10);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #fff;
+      border-radius: 9px;
+      min-width: 30px;
+      height: 28px;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      line-height: 1;
+    }
 
-                    width="100%"></video>
+    .hud-btn:hover { background: rgba(255, 255, 255, 0.2); }
 
-                <div class="player"></div>
+    .time-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      margin-left: 2px;
+    }
 
-                <div class="file-name">
+    .time-label span { color: var(--muted); font-weight: 600; }
 
-                    <style>
-  .container {
-  align-items: center;
-  justify-content: center;
-  display: flex;
- 
-}
+    .controls-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 11px 15px;
+      background: rgba(12, 16, 25, 0.94);
+      border-top: 1px solid var(--border);
+    }
 
-.text {
-  font-size: 20px;
-  padding-left: 20px;
-}
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+    }
 
-img {
-  max-width: 100%;
-  max-height: 100%;
-}
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      flex-shrink: 0;
+    }
 
+    .dot.warn {
+      background: var(--gold);
+      box-shadow: 0 0 8px var(--gold);
+    }
+
+    .quality-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .q-btn {
+      background: var(--surface);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 11px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.15s ease;
+    }
+
+    .q-btn:hover { color: var(--text); }
+
+    .q-btn.active {
+      background: rgba(0, 229, 160, 0.16);
+      border-color: rgba(0, 229, 160, 0.5);
+      color: var(--accent);
+    }
+
+    /* Highlighted Play in MRDb Card */
+    .mrdb-hero {
+      border-radius: 20px;
+      padding: 16px 18px;
+      background: linear-gradient(135deg, rgba(0, 229, 160, 0.16), rgba(0, 176, 255, 0.10));
+      border: 1.5px solid rgba(0, 229, 160, 0.48);
+      box-shadow: 0 12px 32px rgba(0, 229, 160, 0.12);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .mrdb-hero-info {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      flex: 1 1 240px;
+    }
+
+    .mrdb-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      color: #04140f;
+      display: grid;
+      place-items: center;
+      font-size: 20px;
+      font-weight: 900;
+      flex-shrink: 0;
+    }
+
+    .mrdb-hero-title {
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 3px;
+    }
+
+    .mrdb-hero-desc {
+      font-size: 12px;
+      color: rgba(245, 247, 250, 0.8);
+      line-height: 1.35;
+    }
+
+    .mrdb-cta {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: linear-gradient(135deg, var(--accent), #10f0b0);
+      color: #04140f;
+      border: none;
+      border-radius: 14px;
+      padding: 12px 20px;
+      font-size: 13.5px;
+      font-weight: 900;
+      cursor: pointer;
+      text-decoration: none;
+      box-shadow: 0 8px 22px rgba(0, 229, 160, 0.32);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .mrdb-cta:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 26px rgba(0, 229, 160, 0.42);
+    }
+
+    /* Info & Shared Cards */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      backdrop-filter: blur(10px);
+    }
+
+    .file-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .file-title {
+      font-size: 14.5px;
+      font-weight: 700;
+      line-height: 1.4;
+      word-break: break-word;
+      flex: 1 1 220px;
+    }
+
+    .badge-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .pill-badge {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 5px 11px;
+      font-size: 11.5px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .pill-badge.accent {
+      color: var(--accent);
+      background: rgba(0, 229, 160, 0.12);
+      border-color: rgba(0, 229, 160, 0.3);
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 8px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      font-size: 12.5px;
+      font-weight: 700;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+    }
+
+    .btn:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+
+    /* About & Developer Page Styles */
+    .section-heading {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 16px;
+      font-weight: 800;
+    }
+
+    .section-bar {
+      width: 4px;
+      height: 17px;
+      border-radius: 99px;
+      background: linear-gradient(180deg, var(--accent), var(--cyan));
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .feature-item {
+      background: #0c101a;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .feature-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: rgba(0, 229, 160, 0.13);
+      border: 1px solid rgba(0, 229, 160, 0.28);
+      color: var(--accent);
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      margin-bottom: 2px;
+    }
+
+    .feature-title { font-size: 13.5px; font-weight: 800; }
+    .feature-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
+
+    .dev-profile {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      flex-wrap: wrap;
+    }
+
+    .dev-avatar {
+      width: 64px;
+      height: 64px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, var(--violet), var(--accent));
+      color: #05080f;
+      display: grid;
+      place-items: center;
+      font-size: 22px;
+      font-weight: 900;
+      box-shadow: 0 10px 26px rgba(124, 92, 255, 0.25);
+      flex-shrink: 0;
+    }
+
+    .dev-name { font-size: 20px; font-weight: 900; margin-bottom: 3px; }
+    .dev-role { font-size: 12.5px; color: var(--accent); font-weight: 700; margin-bottom: 5px; }
+    .dev-bio { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+
+    .stack-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
+    .contact-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 9px;
+    }
+
+    .footer-note {
+      text-align: center;
+      color: var(--muted);
+      font-size: 11.5px;
+      padding-top: 4px;
+    }
+
+    @media (max-width: 600px) {
+      .topbar { justify-content: space-between; }
+      .nav-tabs { order: 3; width: 100%; justify-content: space-between; }
+      .nav-tab { flex: 1; text-align: center; padding: 7px 8px; }
+      .mrdb-cta { width: 100%; }
+      .hud-btn { padding: 5px 7px; font-size: 11px; }
+      .time-label { font-size: 11px; }
+    }
   </style>
-  <body>
-    <div class="container">
-       <div class="text">
-         <p> <h1><a href="https://whatsapp.com/channel/0029VaLe9dSGk1G2sHAqbR0s"><strong>Tamil Rockers</strong></a></h1>
-</p>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand" onclick="switchTab('stream')">
+        <div class="brand-mark">
+          <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:17px;margin-left:1px;"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+        </div>
+        <div>
+          <div class="brand-title">MR<span>Db</span></div>
+          <div class="brand-sub">Cinema Stream</div>
+        </div>
       </div>
-      <div class="image">
-        <img width="20%" src="https://raw.githubusercontent.com/darkhacker34/File-To-Link/main/biisal/template/6270515.png">
-      </div>
-     
-    </div>
 
-                   <br>
+      <nav class="nav-tabs" aria-label="Navigation">
+        <button class="nav-tab active" data-tab="stream" onclick="switchTab('stream')">Stream</button>
+        <button class="nav-tab" data-tab="about" onclick="switchTab('about')">About</button>
+        <button class="nav-tab" data-tab="developer" onclick="switchTab('developer')">Developer</button>
+      </nav>
 
-                    <p id="myDiv">{{file_name}}</p>
+      <a class="top-dl" href="{{ download_url }}">
+        <svg class="svg-stroke" viewBox="0 0 24 24" style="font-size:14px;"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14"/></svg>
+        <span>Download</span>
+      </a>
+    </header>
 
-                    <br>
-                    <h6><marquee style="color:lightblue;"behavior="scroll" direction="left"> 𝚂𝚌𝚛𝚘𝚕𝚕 𝙳𝚘𝚠𝚗 𝚃𝚘 𝙿𝚕𝚊𝚢 𝙰𝚗𝚍 𝙳𝚘𝚠𝚗𝚕𝚘𝚊𝚍 𝚃𝚑𝚎 𝚅𝚒𝚍𝚎𝚘/𝙵𝚒𝚕𝚎 &#x2713</marquee></h6>
+    <!-- TAB 1: STREAM PLAYER -->
+    <section class="tab-pane active" id="pane-stream">
+      <div class="player-card">
+        <div class="video-box" id="videoBox">
+          <video id="player" playsinline preload="auto" poster="{{ thumb_url }}"></video>
 
-                </div>
+          <div class="skip-toast left" id="skipLeftToast">-10s</div>
+          <div class="skip-toast right" id="skipRightToast">+10s</div>
 
-                <div class="downloadBtn">
-                  
- <marquee behavior="alternate"><button class="magnet" onclick="bisalDownload()"><img style="height: 45px;" 
-
-                            src="https://raw.githubusercontent.com/darkhacker34/File-To-Link/main/biisal/template/IMG_20240225_162053.png" alt="">𝗗𝗼𝘄𝗻𝗹𝗼𝗮𝗱 𝗙𝗶𝗹𝗲</button>
- </marquee> 
-
-
-                    <button class="magnet" onclick="vlc_player()"><img src="https://i.postimg.cc/15TQ4y7B/vlc.png"alt="">𝗣𝗹𝗮𝘆 𝗶𝗻 𝗩𝗟𝗖</button>
-
-                    <button class="magnet" onclick="mx_player()"><img src="https://i.postimg.cc/sx4Msv4T/mx.png"
-
-                            alt="">𝗣𝗹𝗮𝘆 𝗶𝗻 𝗠𝗫 𝗣𝗹𝗮𝘆𝗲𝗿</button>
-
-                    <button class="magnet" onclick="playit_player()"><img src="https://i.postimg.cc/RVGWYJFF/playit.png"
-
-                            alt="">𝗪𝗮𝘁𝗰𝗵 𝗶𝗻 𝗣𝗹𝗮𝘆𝗶𝘁</button>
-
-                    <button class="magnet" onclick="km_player()"><img src="https://i.postimg.cc/wT9tFQ9Z/km.png"
-
-                            alt="">𝗪𝗮𝘁𝗰𝗵 𝗶𝗻 𝗞𝗠 𝗣𝗹𝗮𝘆𝗲𝗿</button>
-
-                    <button class="magnet" onclick="s_player()"><img src="https://i.postimg.cc/XYJr6NGg/s.png"
-
-                            alt="">𝗣𝗹𝗮𝘆 𝗶𝗻 𝗦 𝗣𝗹𝗮𝘆𝗲𝗿</button>
-
-                    <button class="magnet" onclick="hd_player()"><img src="https://i.postimg.cc/rFT43LNh/hd.png"
-
-                            alt="">𝗪𝗮𝘁𝗰𝗵 𝗶𝗻 𝗛𝗗 𝗣𝗹𝗮𝘆𝗲𝗿 (4𝗞)</button>
-
-                </div>
-
+          <div class="center-overlay">
+            <div class="buffer-box" id="bufferBox">
+              <div class="spinner"></div>
+              <div class="buffer-label" id="bufferLabel">Preparing stream...</div>
             </div>
+            <button class="center-play-btn" id="centerPlayBtn" aria-label="Play or pause" onclick="togglePlay(event)">
+              <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:26px;margin-left:2px;"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+            </button>
+          </div>
 
-            <div class="abt">
-
-                <div class="about">
-
-                    <div class="about-dets">
-
-                        <div 
-                          
-                          class="abt-sec" id="sec1" style="padding: 160px 30px;">
-
-                            <h1 style="text-align: center;">WELCOME TO OUR <br><Span>STREAMING</Span> <br> PAGE</h1>
-
-                            <p style="text-align: center; line-height: 2;word-spacing: 2px;  letter-spacing: 0.8px;">
-
-                                We,re
-
-                                thrilled to have <span> you</span> here.
-
-                                Get ready for an
-
-                                amazing <span>experience</span>
-
-                                filled with <span>entertainment</span>, <span>fun</span>, and <span>surprises</span>.
-
-                                Grab
-
-                                your snacks, sit back, and <span>enjoy</span> the show!
-
-                            </p>
-
-                        </div>
-                      
-
-                        <div class="abt-sec" id="sec2">
-
-                            <h1>OUR <span>CHANNELS</span></h1>
-
-                            <div class="links chnl-link">
-                              
-
-                                <a class="magnet" href="https://whatsapp.com/channel/0029VaLe9dSGk1G2sHAqbR0s"><button>𝗪𝗵𝗮𝘁𝘀𝗔𝗽𝗽 𝗖𝗵𝗮𝗻𝗻𝗲𝗹</button></a>
-
-                                <a class="magnet" href="https://t.me/MV_Rockers"><button>𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 𝗖𝗵𝗮𝗻𝗻𝗲𝗹</button></a>
-
-
-                            </div>
-
-                        </div>
-
-                        <div class="abt-sec" id="sec3">
-
-                            <h1>OUR <span>BOTS</span> LIST</h1>
-
-                            <div class="links bot-link">
-
-                                <a class="magnet" href="https://t.me/FileToSpeedLink_Bot"><button>𝗙𝗶𝗹𝗲 𝗧𝗼 𝗟𝗶𝗻𝗸 𝗕𝗼𝘁</button></a>
-
-                                <a class="magnet" href="https://t.me/TBv3_Bot"><button>𝗧𝗲𝗿𝗮𝗕𝗼𝘅 𝗟𝗲𝗲𝗰𝗵 𝗕𝗼𝘁</button></a>
-
-                                <a class="magnet" href="https://t.me/MovieA2Bot"><button>𝗙𝗶𝗹𝗲 𝗦𝘁𝗼𝗿𝗲 𝗕𝗼𝘁</button></a>
-
-                                <a class="magnet" href="https://t.me/FileToFile_LinkBot"><button>𝗠𝗲𝗿𝗴𝗲 𝗕𝗼𝘁</button></a>
-
-                            </div>
-
-                        </div>
-
-                        <div class="abt-sec" id="sec4">
-
-                           
-
-
-                            <p style="text-align: center;">we can talk for your support and you can report through <i class="fa-brands fa-telegram fa-lg"></i>
-                              
-                              </p>
-
-                              
-                             
-                            <div class="links contact">
-
-                              <a class="magnet" href="https://www.instagram.com/nihh____al"><button><i
-
-                                class="fa-brands fa-instagram fa-lg"></i> Iɴsᴛᴀɢʀᴀᴍ</button></a>
-                              
-                                
-                                 <a class="magnet" href="https://t.me/nihh_all"><button><i class="fa-brands fa-telegram fa-lg"></i> Tᴇʟᴇɢʀᴀᴍ</button></a>
-                              
-                                <a href="https://Wa.me/919605945341"><button><i
-
-                                class="fa-brands fa-whatsapp fa-lg"></i> WʜᴀᴛsAᴘᴘ</button></a>
-                              <br>
-                              
-                              
-                              <h3>Follow Me On GotHub</h3>
-                              
-                              <a class="magnet" href="https://github.com/darkhacker34"><button><i class="fa-brands fa-github fa-lg"></i></button></a>
-                              
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                </div>
-
+          <div class="hud-bottom" id="hudBottom">
+            <div class="timeline-container">
+              <div class="seek-tooltip" id="seekTooltip">00:00</div>
+              <input
+                id="seekSlider"
+                class="seek-range"
+                type="range"
+                min="0"
+                max="{{ duration_seconds or 100 }}"
+                value="0"
+                step="1"
+              />
             </div>
-
+            <div class="hud-row">
+              <div class="hud-left">
+                <button class="hud-btn" id="playPauseBtn" aria-label="Play or pause" onclick="togglePlay(event)">
+                  <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:15px;"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+                </button>
+                <button class="hud-btn" onclick="skipBy(-10, event)">-10s</button>
+                <button class="hud-btn" onclick="skipBy(10, event)">+10s</button>
+                <div class="time-label" id="timeLabel">00:00 <span>/ --:--</span></div>
+              </div>
+              <div class="hud-right">
+                <button class="hud-btn" id="speedBtn" onclick="cycleSpeed(event)">1x</button>
+                <button class="hud-btn" id="pipBtn" onclick="togglePip(event)" style="display:none;">PiP</button>
+                <button class="hud-btn" id="muteBtn" aria-label="Mute or unmute" onclick="toggleMute(event)">
+                  <svg class="svg-stroke" viewBox="0 0 24 24" style="font-size:15px;"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 010 7"/><path d="M18.5 5.5a9 9 0 010 13"/></svg>
+                </button>
+                <button class="hud-btn" aria-label="Fullscreen" onclick="toggleFullscreen(event)">
+                  <svg class="svg-stroke" viewBox="0 0 24 24" style="font-size:14px;"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <footer>
-
-            <div class="mid">
-
-                <h1 class="mid-text">VISIT OUR<a href="#sec3" onclick="bot_btn_clicked()"><span> Bᴏᴛ Lɪsᴛ</span></a>
-                  <br>
-                  
-                    FOR
-
-                    MORE
-
-                    INFO</h1>
-
-            </div>
-
-
-
-            <div class="last-text">
-
-                <p style="font-weight: 500;color:lightblue;">
-
-                    Welcome to our online streaming platform! Our website allows users to generate streamable links for
-
-                    various files using Telegram bots. Please note that we are not responsible for the content shared or
-
-                    streamed through our service. Users are encouraged to respect copyright laws and adhere to our
-
-                    community
-
-                    guidelines. Enjoy easy, hassle-free file streaming.
-
-                </p>
-
-            </div>
-
-            <center>
-
-
-
-                <div class="movie-cont">
-
-                    <a href="https://t.me/MV_Rockers">
-
-                        <div class="movieSug">
-
-                            <div class="movieDets">
-
-
-
-                            </div>
-
-                            <div class="movieimg">
-
-                                <img src="">
-
-                            </div>
-
-                        </div>
-
-                    </a>
-
-                    <div class="low-width-movie-dets">
-
-                        <div class="movieStsBar">
-
-                            <div class="movieDets-mini">
-
-
-
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                    <button class="ranMovBtn" onclick="getDets()" style="color:lightblue;background-color:00FFFFFF;font-size: 17px;">𝗚𝗲𝘁 𝗠𝗼𝗿𝗲 𝗠𝗼𝘃𝗶𝗲 𝗦𝘂𝗴𝗴𝗲𝘀𝘁𝗶𝗼𝗻</button>
-
-                </div>
-
-
-
-            </center>
-
-            
-
-
-
-            <center>
-
-                <div class="copyright">
-
-                    <h5 class="text-center">Copyright © 2024 <a href="https://t.me/MV_Rockers"><span
-
-                                style="font-size: 20px;color:lightblue;">Tᴀᴍɪʟ RᴏᴄᴋᴇʀS</span></a>. All
-
-                        Rights Reserved.</h5>
-
-                    <div class="icons">
-
-                        <a href="https://github.com/darkhacker34"><i class="fa-brands fa-github fa-lg"></i></a>
-
-                        <a href="https://t.me/MV_Rockers"><i class="fa-brands fa-telegram fa-lg"></i></a>
-
-                        <a href="https://www.instagram.com/nihh____al"><i
-
-                                class="fa-brands fa-square-instagram fa-lg"></i></a>
-
-                    </div>
-
-                    <h4 style="font-size: 10px;">𝚃𝚑𝚒𝚜 𝙿𝚊𝚐𝚎 𝙼𝚘𝚍𝚒𝚏𝚢𝚎𝚍 𝙱𝚢 <a
-
-                            href="https://t.me/MV_Rockers"><span style="color:lightblue;font-size: 15px;">Nɪʜᴀʟ</span></a></h4>
-
-                </div>
-
-            </center>
-
-        </footer>
-
-</body>
-
-
-
-
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/ScrollTrigger.min.js"></script>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.155.0/three.min.js"></script>
-
-<script src="https://cdn.jsdelivr.net/gh/automat/controlkit.js@master/bin/controlKit.min.js"></script>
-
-<script type="text/javascript" src="https://cdn.jsdelivr.net/npm/sheryjs/dist/Shery.js"></script>
-
-<script>
-
-    document.addEventListener("DOMContentLoaded", function () {
-
-        const uncopyableElement = document.querySelector(".uncopyable");
-
-
-
-        uncopyableElement.addEventListener("selectstart", function (event) {
-
-            event.preventDefault();
-
+        <div class="controls-strip">
+          <div class="status-pill">
+            <span class="dot" id="statusDot"></span>
+            <span id="statusMsg">Loading stream...</span>
+          </div>
+          <div class="quality-row">
+            <button class="q-btn" data-mode="720" onclick="selectMode('720')">720p</button>
+            <button class="q-btn" data-mode="480" onclick="selectMode('480')">480p</button>
+            <button class="q-btn" data-mode="360" onclick="selectMode('360')">360p</button>
+            <button class="q-btn" data-mode="orig" onclick="selectMode('orig')">Original</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Highlighted Play in MRDb Card -->
+      <div class="mrdb-hero">
+        <div class="mrdb-hero-info">
+          <div class="mrdb-icon">
+            <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:21px;margin-left:2px;"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+          </div>
+          <div>
+            <div class="mrdb-hero-title">Play in MRDb</div>
+            <div class="mrdb-hero-desc">Smoother HD playback, audio &amp; subtitle tracks, gestures, and auto-resume.</div>
+          </div>
+        </div>
+        <button class="mrdb-cta" id="playInMrdbBtn" onclick="openInMrdb()">
+          <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:16px;"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+          <span>Play in MRDb</span>
+        </button>
+      </div>
+
+      <div class="card">
+        <div class="file-row">
+          <div class="file-title">{{ file_name }}</div>
+          <div class="badge-row">
+            <span class="pill-badge accent" id="durationBadge" style="display:none;">--:--</span>
+            <span class="pill-badge">{{ file_size }}</span>
+          </div>
+        </div>
+        <div class="actions">
+          <a class="btn" href="{{ download_url }}">
+            <svg class="svg-stroke" viewBox="0 0 24 24" style="font-size:14px;"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14"/></svg>
+            <span>Download</span>
+          </a>
+          <button class="btn" onclick="openVlc()">
+            <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:14px;color:var(--accent);"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+            <span>VLC</span>
+          </button>
+          <button class="btn" onclick="openMx()">
+            <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:14px;color:var(--accent);"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+            <span>MX Player</span>
+          </button>
+          <button class="btn" onclick="openPlayit()">
+            <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:14px;color:var(--accent);"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+            <span>PlayIt</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: ABOUT -->
+    <section class="tab-pane" id="pane-about">
+      <div class="card">
+        <div class="section-heading">
+          <span class="section-bar"></span>
+          <span>About MRDb Cinema Stream</span>
+        </div>
+        <p class="dev-bio">
+          <strong>MRDb (Movie Research Database)</strong> brings movie discovery, trailers, verified soundtracks, and fast Telegram-powered HD video streaming together in one clean experience.
+        </p>
+        <div class="feature-grid">
+          <div class="feature-item">
+            <div class="feature-icon">⚡</div>
+            <div class="feature-title">Adaptive Web Streaming</div>
+            <div class="feature-desc">Automatically converts MKV / HEVC / surround files to browser-ready H.264 MP4 with 720p, 480p, 360p, and Original playback.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">⏱</div>
+            <div class="feature-title">Instant Full-Timeline Seek</div>
+            <div class="feature-desc">Displays total movie duration upfront, supports timeline scrubbing, double-tap ±10s skip, playback speed, and Picture-in-Picture.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">📱</div>
+            <div class="feature-title">Native MRDb App Player</div>
+            <div class="feature-desc">Switch to MRDb on Android for hardware-accelerated MKV playback, multi-audio tracks, embedded subtitles, and watch-progress sync.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">🤖</div>
+            <div class="feature-title">Telegram Bot Companion</div>
+            <div class="feature-desc">Forward or upload any video file to @FileToSpeedLink_Bot to generate direct stream links and instant web theater pages.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mrdb-hero">
+        <div class="mrdb-hero-info">
+          <div class="mrdb-icon">📲</div>
+          <div>
+            <div class="mrdb-hero-title">Get MRDb for Android</div>
+            <div class="mrdb-hero-desc">Open directly if installed or grab the latest APK release from GitHub.</div>
+          </div>
+        </div>
+        <button class="mrdb-cta" onclick="openInMrdb()">
+          <svg class="svg-icon" viewBox="0 0 24 24" style="font-size:16px;"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>
+          <span>Open / Download MRDb</span>
+        </button>
+      </div>
+
+      <div class="card">
+        <div class="section-heading">
+          <span class="section-bar"></span>
+          <span>Notice</span>
+        </div>
+        <p class="dev-bio">
+          This service generates temporary stream endpoints from files shared through Telegram bots. Please respect content copyrights and local guidelines while streaming.
+        </p>
+      </div>
+    </section>
+
+    <!-- TAB 3: DEVELOPER -->
+    <section class="tab-pane" id="pane-developer">
+      <div class="card">
+        <div class="dev-profile">
+          <div class="dev-avatar">NM</div>
+          <div style="flex:1 1 220px;">
+            <div class="dev-name">Nihal M</div>
+            <div class="dev-role">Creator of MRDb &amp; Stream Companion</div>
+            <p class="dev-bio">
+              Building fast, clean mobile and streaming experiences with Flutter, Python, and modern media pipelines.
+            </p>
+          </div>
+        </div>
+
+        <div class="section-heading">
+          <span class="section-bar"></span>
+          <span>Tech Stack</span>
+        </div>
+        <div class="stack-pills">
+          <span class="pill-badge accent">Flutter &amp; Dart</span>
+          <span class="pill-badge">media_kit / libmpv</span>
+          <span class="pill-badge">Python &amp; aiohttp</span>
+          <span class="pill-badge">FFmpeg Streaming</span>
+          <span class="pill-badge">Pyrogram</span>
+          <span class="pill-badge">MongoDB &amp; Firebase</span>
+          <span class="pill-badge">TMDb API</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-heading">
+          <span class="section-bar"></span>
+          <span>Connect &amp; Links</span>
+        </div>
+        <div class="contact-grid">
+          <a class="btn" href="https://github.com/nihhaall" target="_blank" rel="noopener">💻 GitHub</a>
+          <a class="btn" href="https://github.com/nihhaall/mrdb/releases" target="_blank" rel="noopener">📦 MRDb Releases</a>
+          <a class="btn" href="https://t.me/nihh_all" target="_blank" rel="noopener">✈ Telegram</a>
+          <a class="btn" href="https://t.me/FileToSpeedLink_Bot" target="_blank" rel="noopener">🤖 Stream Bot</a>
+          <a class="btn" href="https://www.instagram.com/nihh____al" target="_blank" rel="noopener">📸 Instagram</a>
+          <a class="btn" href="https://wa.me/919605945341" target="_blank" rel="noopener">💬 WhatsApp</a>
+          <a class="btn" href="mailto:nihalthoppil16@gmail.com?subject=MRDb%20Feedback">✉ Email</a>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer-note">MRDb Cinema Stream • Made by Nihal M</div>
+  </div>
+
+  <script>
+    const videoBox = document.getElementById('videoBox');
+    const video = document.getElementById('player');
+    const hudBottom = document.getElementById('hudBottom');
+    const bufferBox = document.getElementById('bufferBox');
+    const bufferLabel = document.getElementById('bufferLabel');
+    const centerPlayBtn = document.getElementById('centerPlayBtn');
+    const playPauseBtn = document.getElementById('playPauseBtn');
+    const speedBtn = document.getElementById('speedBtn');
+    const pipBtn = document.getElementById('pipBtn');
+    const muteBtn = document.getElementById('muteBtn');
+    const seekSlider = document.getElementById('seekSlider');
+    const seekTooltip = document.getElementById('seekTooltip');
+    const timeLabel = document.getElementById('timeLabel');
+    const durationBadge = document.getElementById('durationBadge');
+    const statusDot = document.getElementById('statusDot');
+    const statusMsg = document.getElementById('statusMsg');
+    const skipLeftToast = document.getElementById('skipLeftToast');
+    const skipRightToast = document.getElementById('skipRightToast');
+
+    const ORIG_REL = {{ file_url | tojson }};
+    const T720_REL = {{ transcode_720_url | tojson }};
+    const T480_REL = {{ transcode_480_url | tojson }};
+    const T360_REL = {{ transcode_360_url | tojson }};
+    const PREFER_TRANSCODE = {{ prefer_transcode | tojson }};
+    const SERVER_DURATION = Number({{ duration_seconds | default(0) | tojson }}) || 0;
+    const DURATION_API = `/api/duration/{{ msg_id }}?hash={{ secure_hash }}`;
+    const MRDB_RELEASES_URL = 'https://github.com/nihhaall/mrdb/releases';
+
+    const absOriginal = window.location.origin + ORIG_REL;
+    const speeds = [1, 1.25, 1.5, 2, 0.75];
+    let speedIndex = 0;
+    let currentMode = PREFER_TRANSCODE ? '720' : 'orig';
+    let transcodeOffsetSec = 0;
+    let totalDurationSec = SERVER_DURATION;
+    let isSeeking = false;
+    let isBuffering = false;
+    let hideHudTimer = null;
+    let fallbackTimer = null;
+    let skipToastTimer = null;
+    let lastTapTime = 0;
+    let hasLoadedFrame = false;
+    let triedTranscodeFallback = false;
+    let triedOrigFallback = false;
+
+    if (document.pictureInPictureEnabled) {
+      pipBtn.style.display = 'inline-block';
+    }
+
+    function switchTab(tabName) {
+      document.querySelectorAll('.nav-tab').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+      });
+      document.querySelectorAll('.tab-pane').forEach((pane) => {
+        pane.classList.toggle('active', pane.id === `pane-${tabName}`);
+      });
+    }
+
+    function fmtClock(sec) {
+      sec = Math.max(0, Math.floor(sec || 0));
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      const two = (n) => String(n).padStart(2, '0');
+      return h > 0 ? `${h}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+    }
+
+    function effectiveCurrentSec() {
+      return currentMode === 'orig'
+        ? (video.currentTime || 0)
+        : (transcodeOffsetSec + (video.currentTime || 0));
+    }
+
+    function effectiveDurationSec() {
+      if (totalDurationSec > 0) return totalDurationSec;
+      const vd = video.duration;
+      return (Number.isFinite(vd) && vd > 0) ? vd : 0;
+    }
+
+    function updateTimelineUI(overridePosSec = null) {
+      const pos = overridePosSec !== null ? overridePosSec : effectiveCurrentSec();
+      const dur = effectiveDurationSec();
+      if (dur > 0) {
+        seekSlider.max = Math.floor(dur);
+        const clamped = Math.min(Math.floor(pos), Math.floor(dur));
+        if (!isSeeking || overridePosSec !== null) {
+          seekSlider.value = clamped;
+        }
+        const pct = Math.min(100, Math.max(0, (clamped / dur) * 100));
+        seekSlider.style.background =
+          `linear-gradient(to right, #00e5a0 ${pct}%, rgba(255,255,255,0.22) ${pct}%)`;
+        timeLabel.innerHTML = `${fmtClock(pos)} <span>/ ${fmtClock(dur)}</span>`;
+        durationBadge.textContent = `⏱ ${fmtClock(dur)}`;
+        durationBadge.style.display = 'inline-block';
+      } else {
+        timeLabel.innerHTML = `${fmtClock(pos)} <span>/ --:--</span>`;
+      }
+    }
+
+    function setStatus(text, warn = false) {
+      statusMsg.textContent = text;
+      statusDot.classList.toggle('warn', !!warn);
+      if (warn) bufferLabel.textContent = text;
+    }
+
+    const SVG_PLAY_CENTER = '<svg class="svg-icon" viewBox="0 0 24 24" style="font-size:26px;margin-left:2px;"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>';
+    const SVG_PAUSE_CENTER = '<svg class="svg-icon" viewBox="0 0 24 24" style="font-size:24px;"><path d="M7 5.5h3.5v13H7zm6.5 0H17v13h-3.5z"/></svg>';
+    const SVG_PLAY_HUD = '<svg class="svg-icon" viewBox="0 0 24 24" style="font-size:15px;"><path d="M8 5.5v13l10-6.5-10-6.5z"/></svg>';
+    const SVG_PAUSE_HUD = '<svg class="svg-icon" viewBox="0 0 24 24" style="font-size:14px;"><path d="M7 5.5h3.5v13H7zm6.5 0H17v13h-3.5z"/></svg>';
+    const SVG_VOL_ON = '<svg class="svg-stroke" viewBox="0 0 24 24" style="font-size:15px;"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 010 7"/><path d="M18.5 5.5a9 9 0 010 13"/></svg>';
+    const SVG_VOL_OFF = '<svg class="svg-stroke" viewBox="0 0 24 24" style="font-size:15px;"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M22 9l-6 6m0-6l6 6"/></svg>';
+
+    function syncPlayButtons() {
+      const paused = video.paused;
+      playPauseBtn.innerHTML = paused ? SVG_PLAY_HUD : SVG_PAUSE_HUD;
+      centerPlayBtn.innerHTML = paused ? SVG_PLAY_CENTER : SVG_PAUSE_CENTER;
+      centerPlayBtn.classList.toggle('hidden', !paused || isBuffering);
+      bufferBox.classList.toggle('visible', isBuffering);
+    }
+
+    function showHudTemporarily() {
+      hudBottom.classList.remove('hidden');
+      clearTimeout(hideHudTimer);
+      if (!video.paused && !isSeeking) {
+        hideHudTimer = setTimeout(() => {
+          hudBottom.classList.add('hidden');
+        }, 3200);
+      }
+    }
+
+    function updateQualityButtons() {
+      document.querySelectorAll('.q-btn[data-mode]').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.mode === currentMode);
+      });
+    }
+
+    function buildSource(mode, offsetSec) {
+      if (mode === 'orig') return ORIG_REL;
+      const base = mode === '720' ? T720_REL : (mode === '480' ? T480_REL : T360_REL);
+      return offsetSec > 0 ? `${base}&ss=${Math.floor(offsetSec)}` : base;
+    }
+
+    function loadMode(mode, offsetSec = 0, autoplay = true) {
+      clearTimeout(fallbackTimer);
+      hasLoadedFrame = false;
+      isBuffering = autoplay;
+      currentMode = mode;
+      transcodeOffsetSec = mode === 'orig' ? 0 : Math.max(0, Math.floor(offsetSec));
+      updateQualityButtons();
+      updateTimelineUI(transcodeOffsetSec);
+      syncPlayButtons();
+
+      const label = mode === 'orig' ? 'Original' : `${mode}p`;
+      setStatus(`Loading ${label}...`, true);
+
+      video.src = buildSource(mode, transcodeOffsetSec);
+      video.playbackRate = speeds[speedIndex];
+      video.load();
+      if (autoplay) {
+        video.play().catch(() => {
+          isBuffering = false;
+          syncPlayButtons();
         });
+      }
 
+      if (mode === 'orig') {
+        fallbackTimer = setTimeout(() => {
+          if (!hasLoadedFrame && currentMode === 'orig' && !triedTranscodeFallback) {
+            triedTranscodeFallback = true;
+            setStatus('Switching to 720p...', true);
+            loadMode('720', 0, true);
+          }
+        }, 6500);
+      }
+    }
+
+    function seekToSeconds(targetSec) {
+      const dur = effectiveDurationSec();
+      const clamped = Math.max(0, dur > 0 ? Math.min(Math.floor(targetSec), Math.floor(dur)) : Math.floor(targetSec));
+      if (currentMode === 'orig') {
+        video.currentTime = clamped;
+        updateTimelineUI(clamped);
+      } else {
+        loadMode(currentMode, clamped, true);
+      }
+      showHudTemporarily();
+    }
+
+    function togglePlay(e) {
+      if (e) e.stopPropagation();
+      if (video.paused) {
+        isBuffering = true;
+        syncPlayButtons();
+        video.play().catch(() => {
+          isBuffering = false;
+          syncPlayButtons();
+        });
+      } else {
+        video.pause();
+      }
+      showHudTemporarily();
+    }
+
+    function showSkipToast(delta) {
+      clearTimeout(skipToastTimer);
+      skipLeftToast.classList.toggle('visible', delta < 0);
+      skipRightToast.classList.toggle('visible', delta > 0);
+      skipToastTimer = setTimeout(() => {
+        skipLeftToast.classList.remove('visible');
+        skipRightToast.classList.remove('visible');
+      }, 650);
+    }
+
+    function skipBy(deltaSec, e) {
+      if (e) e.stopPropagation();
+      showSkipToast(deltaSec);
+      seekToSeconds(effectiveCurrentSec() + deltaSec);
+    }
+
+    function cycleSpeed(e) {
+      if (e) e.stopPropagation();
+      speedIndex = (speedIndex + 1) % speeds.length;
+      const nextRate = speeds[speedIndex];
+      video.playbackRate = nextRate;
+      speedBtn.textContent = `${nextRate}x`;
+      showHudTemporarily();
+    }
+
+    function togglePip(e) {
+      if (e) e.stopPropagation();
+      if (document.pictureInPictureElement) {
+        document.exitPictureInPicture?.();
+      } else {
+        video.requestPictureInPicture?.().catch(() => {});
+      }
+    }
+
+    function toggleMute(e) {
+      if (e) e.stopPropagation();
+      video.muted = !video.muted;
+      muteBtn.innerHTML = video.muted ? SVG_VOL_OFF : SVG_VOL_ON;
+      showHudTemporarily();
+    }
+
+    function toggleFullscreen(e) {
+      if (e) e.stopPropagation();
+      if (document.fullscreenElement) {
+        document.exitFullscreen?.();
+      } else if (videoBox.requestFullscreen) {
+        videoBox.requestFullscreen().catch(() => {
+          video.webkitEnterFullscreen?.();
+        });
+      } else {
+        video.webkitEnterFullscreen?.();
+      }
+    }
+
+    function selectMode(mode) {
+      const pos = effectiveCurrentSec();
+      loadMode(mode, mode === 'orig' ? 0 : pos, true);
+    }
+
+    videoBox.addEventListener('click', (e) => {
+      if (e.target.closest('.hud-bottom') || e.target.closest('.center-play-btn')) return;
+      const now = Date.now();
+      const rect = videoBox.getBoundingClientRect();
+      const relX = (e.clientX - rect.left) / Math.max(1, rect.width);
+      if (now - lastTapTime < 280) {
+        lastTapTime = 0;
+        skipBy(relX < 0.45 ? -10 : 10);
+        return;
+      }
+      lastTapTime = now;
+      if (hudBottom.classList.contains('hidden')) {
+        showHudTemporarily();
+      } else {
+        togglePlay();
+      }
     });
 
-</script>
+    function showSeekTooltipForRatio(ratio) {
+      const dur = effectiveDurationSec();
+      if (dur <= 0) return;
+      const clampedRatio = Math.min(1, Math.max(0, ratio));
+      seekTooltip.textContent = fmtClock(clampedRatio * dur);
+      seekTooltip.style.left = `${clampedRatio * 100}%`;
+      seekTooltip.classList.add('visible');
+    }
 
-<script src="js/wow.min.js"></script>
+    seekSlider.addEventListener('mousemove', (e) => {
+      const rect = seekSlider.getBoundingClientRect();
+      if (rect.width > 0) {
+        showSeekTooltipForRatio((e.clientX - rect.left) / rect.width);
+      }
+    });
 
-<script>
+    seekSlider.addEventListener('mouseleave', () => {
+      if (!isSeeking) seekTooltip.classList.remove('visible');
+    });
 
-    new WOW().init();
+    seekSlider.addEventListener('input', () => {
+      isSeeking = true;
+      const val = Number(seekSlider.value);
+      const maxVal = Number(seekSlider.max) || 1;
+      showSeekTooltipForRatio(val / maxVal);
+      updateTimelineUI(val);
+      showHudTemporarily();
+    });
 
-</script>
+    seekSlider.addEventListener('change', () => {
+      const target = Number(seekSlider.value);
+      isSeeking = false;
+      seekTooltip.classList.remove('visible');
+      seekToSeconds(target);
+    });
 
-<script src="https://cdn.plyr.io/3.6.9/plyr.js"></script>
+    document.addEventListener('keydown', (e) => {
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+      if (!document.getElementById('pane-stream').classList.contains('active')) return;
+      if (e.code === 'Space' || e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'j') {
+        skipBy(-10);
+      } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'l') {
+        skipBy(10);
+      } else if (e.key.toLowerCase() === 'm') {
+        toggleMute();
+      } else if (e.key.toLowerCase() === 'f') {
+        toggleFullscreen();
+      }
+    });
 
-<script src="https://biisal.github.io/Resources/StreamJs.js"></script>
+    video.addEventListener('loadedmetadata', () => {
+      if (currentMode === 'orig' && Number.isFinite(video.duration) && video.duration > 0) {
+        totalDurationSec = Math.round(video.duration);
+      }
+      updateTimelineUI();
+    });
 
-<script src="script.js"></script>
+    video.addEventListener('loadeddata', () => {
+      hasLoadedFrame = true;
+      isBuffering = false;
+      clearTimeout(fallbackTimer);
+      syncPlayButtons();
+      updateTimelineUI();
+      const label = currentMode === 'orig' ? 'Original' : `${currentMode}p`;
+      setStatus(`Ready • ${label}`, false);
+    });
 
+    video.addEventListener('playing', () => {
+      hasLoadedFrame = true;
+      isBuffering = false;
+      clearTimeout(fallbackTimer);
+      syncPlayButtons();
+      showHudTemporarily();
+      const label = currentMode === 'orig' ? 'Original' : `${currentMode}p`;
+      setStatus(`Playing • ${label}`, false);
+    });
 
+    video.addEventListener('pause', () => {
+      isBuffering = false;
+      syncPlayButtons();
+      showHudTemporarily();
+    });
 
+    video.addEventListener('waiting', () => {
+      isBuffering = true;
+      syncPlayButtons();
+      setStatus('Buffering...', true);
+    });
+
+    video.addEventListener('timeupdate', () => {
+      if (!isSeeking) updateTimelineUI();
+    });
+
+    video.addEventListener('error', () => {
+      clearTimeout(fallbackTimer);
+      isBuffering = false;
+      syncPlayButtons();
+      if (currentMode === 'orig') {
+        if (!triedTranscodeFallback) {
+          triedTranscodeFallback = true;
+          setStatus('Switching to 720p...', true);
+          loadMode('720', 0, true);
+        } else {
+          setStatus('Tap Play in MRDb or VLC below.', true);
+        }
+      } else if (!triedOrigFallback) {
+        triedOrigFallback = true;
+        setStatus('Trying Original...', true);
+        loadMode('orig', 0, true);
+      } else {
+        setStatus('Tap Play in MRDb or Download below.', true);
+      }
+    });
+
+    function openInMrdb() {
+      const isAndroid = /android/i.test(navigator.userAgent || '');
+      if (!isAndroid) {
+        window.location.href = MRDB_RELEASES_URL;
+        return;
+      }
+
+      const encodedFallback = encodeURIComponent(MRDB_RELEASES_URL);
+      const intentUrl =
+        `intent://open#Intent;scheme=mrdb;package=com.mrdb.flit;S.browser_fallback_url=${encodedFallback};end`;
+      window.location.href = intentUrl;
+    }
+
+    function openVlc() { window.location.href = `vlc://${absOriginal}`; }
+    function openMx() { window.location.href = `intent:${absOriginal}#Intent;package=com.mxtech.videoplayer.ad;end`; }
+    function openPlayit() { window.location.href = `playit://playerv2/video?url=${encodeURIComponent(absOriginal)}`; }
+
+    // Fetch exact duration asynchronously if initial render didn't have it cached yet
+    if (totalDurationSec <= 0) {
+      fetch(DURATION_API)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data && data.ok && Number(data.duration) > 0) {
+            totalDurationSec = Math.round(Number(data.duration));
+            updateTimelineUI();
+          }
+        })
+        .catch(() => {});
+    }
+
+    updateTimelineUI(0);
+    syncPlayButtons();
+    loadMode(currentMode, 0, false);
+  </script>
+</body>
 </html>
-
-
-
-<!-- this code is written by @biisal tg:biisal-files  -->
-
-<!-- stealing credit doesnt make you developer..so try to give full credit to the developer 😊 u will not loose anything for giving proper credit.   -->
