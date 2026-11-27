@@ -259,7 +259,7 @@ class ByteStreamer:
 
         current_part = 1
         location = None
-        prefetch_ahead = 1 if part_count <= 2 else 3
+        prefetch_ahead = 1 if part_count <= 2 else 6
         pending_tasks: Dict[int, asyncio.Task] = {}
 
         async def _drain_pending() -> None:

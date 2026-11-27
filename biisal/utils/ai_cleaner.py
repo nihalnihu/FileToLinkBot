@@ -334,6 +334,70 @@ async def _lookup_imdb_title_year(
     return (imdb_title, imdb_year) if imdb_title else None
 
 
+async def _lookup_tmdb_info(
+    session: aiohttp.ClientSession,
+    title: str,
+    year: Optional[int],
+    is_series: bool,
+    tmdb_api_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    key = (
+        (tmdb_api_key or "").strip()
+        or (getattr(Var, "TMDB_API_KEY", "") or os.environ.get("TMDB_API_KEY", "")).strip()
+    )
+    if not key or not title.strip():
+        return None
+
+    async def _search(endpoint: str) -> List[Dict[str, Any]]:
+        url = (
+            f"https://api.themoviedb.org/3/search/{endpoint}"
+            f"?api_key={quote(key)}&query={quote(title.strip())}&page=1"
+        )
+        if year is not None:
+            param = "first_air_date_year" if endpoint == "tv" else "year"
+            url += f"&{param}={year}"
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                return [x for x in (data.get("results") or []) if isinstance(x, dict)]
+        except Exception:
+            return []
+
+    results = await _search("tv" if is_series else "movie")
+    if not results and year is not None:
+        # Retry without year filter in case filename year differed by +/-1 year.
+        saved_year = year
+        year = None
+        results = await _search("tv" if is_series else "movie")
+        year = saved_year
+    if not results:
+        results = await _search("movie" if is_series else "tv")
+    if not results:
+        return None
+
+    best = results[0]
+    if year is not None:
+        for item in results:
+            rd = str(item.get("release_date") or item.get("first_air_date") or "").strip()
+            if len(rd) >= 4 and rd[:4].isdigit() and abs(int(rd[:4]) - year) <= 1:
+                best = item
+                break
+
+    tmdb_title = str(best.get("title") or best.get("name") or "").strip()
+    rd = str(best.get("release_date") or best.get("first_air_date") or "").strip()
+    tmdb_year = _parse_opt_int(rd[:4], 1900, 2100) if len(rd) >= 4 else None
+    raw_lang = str(best.get("original_language") or "").strip().lower()
+    tmdb_lang = _LANG_CODE_MAP.get(raw_lang) or (raw_lang.upper() if len(raw_lang) == 2 else None)
+    return {
+        "tmdb_id": best.get("id"),
+        "title": tmdb_title or None,
+        "year": tmdb_year,
+        "original_language": tmdb_lang,
+    }
+
+
 async def _fetch_original_language_from_ai(
     session: aiohttp.ClientSession,
     title: str,
@@ -423,6 +487,7 @@ async def auto_clean_filename_with_ai(
     existing_title: Optional[str] = None,
     gemini_api_key_override: Optional[str] = None,
     prompt_preset: Optional[str] = None,
+    tmdb_api_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     raw = (file_name or "").strip()
     if not raw:
@@ -436,7 +501,7 @@ async def auto_clean_filename_with_ai(
     if prompt_preset and prompt_preset.strip() and prompt_preset.strip() != DEFAULT_PROMPT_PRESET:
         sys_prompt += f" User formatting preference: {prompt_preset.strip()}"
 
-    timeout = aiohttp.ClientTimeout(total=18)
+    timeout = aiohttp.ClientTimeout(total=25)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         # 1. AI analyzes the raw filename (falls back locally if AI quota/402 occurs)
         ai_res = await _call_ai_json(
@@ -459,25 +524,40 @@ async def auto_clean_filename_with_ai(
         language = parsed["filename_languages"]
         original_language = parsed["original_language"]
 
-        # 2. Verify/correct movie or series name & year against IMDb
-        imdb_match = await _lookup_imdb_title_year(
-            session, base_title, year, is_series
+        # 2. Verify/correct movie or series name, year, and original language via TMDB / IMDb
+        tmdb_info = await _lookup_tmdb_info(
+            session,
+            base_title,
+            year,
+            is_series,
+            tmdb_api_key=tmdb_api_key,
         )
-        if imdb_match:
-            imdb_title, imdb_year = imdb_match
-            title_changed = imdb_title.lower() != base_title.lower()
-            base_title = imdb_title
-            if imdb_year is not None:
-                year = imdb_year
-            if title_changed or not original_language:
-                refreshed = await _fetch_original_language_from_ai(
-                    session,
-                    base_title,
-                    year,
-                    gemini_api_key_override=gemini_api_key_override,
-                )
-                if refreshed:
-                    original_language = refreshed
+        if tmdb_info:
+            if tmdb_info.get("title"):
+                base_title = tmdb_info["title"]
+            if tmdb_info.get("year") is not None:
+                year = tmdb_info["year"]
+            if tmdb_info.get("original_language"):
+                original_language = tmdb_info["original_language"]
+        else:
+            imdb_match = await _lookup_imdb_title_year(
+                session, base_title, year, is_series
+            )
+            if imdb_match:
+                imdb_title, imdb_year = imdb_match
+                title_changed = imdb_title.lower() != base_title.lower()
+                base_title = imdb_title
+                if imdb_year is not None:
+                    year = imdb_year
+                if title_changed or not original_language:
+                    refreshed = await _fetch_original_language_from_ai(
+                        session,
+                        base_title,
+                        year,
+                        gemini_api_key_override=gemini_api_key_override,
+                    )
+                    if refreshed:
+                        original_language = refreshed
 
         # 3. If language wasn't in filename, check fast video file metadata (audio tracks)
         probed_tracks = None
