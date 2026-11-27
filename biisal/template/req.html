@@ -808,6 +808,7 @@
             <span id="statusMsg">Loading stream...</span>
           </div>
           <div class="quality-row">
+            <button class="q-btn" data-mode="remux" onclick="selectMode('remux')">Fast HD</button>
             <button class="q-btn" data-mode="720" onclick="selectMode('720')">720p</button>
             <button class="q-btn" data-mode="480" onclick="selectMode('480')">480p</button>
             <button class="q-btn" data-mode="360" onclick="selectMode('360')">360p</button>
@@ -991,18 +992,36 @@
     const skipRightToast = document.getElementById('skipRightToast');
 
     const ORIG_REL = {{ file_url | tojson }};
+    const REMUX_REL = {{ remux_url | tojson }};
     const T720_REL = {{ transcode_720_url | tojson }};
     const T480_REL = {{ transcode_480_url | tojson }};
     const T360_REL = {{ transcode_360_url | tojson }};
     const PREFER_TRANSCODE = {{ prefer_transcode | tojson }};
+    const VIDEO_CODEC = String({{ video_codec | default('') | tojson }} || '').toLowerCase();
     const SERVER_DURATION = Number({{ duration_seconds | default(0) | tojson }}) || 0;
     const DURATION_API = `/api/duration/{{ msg_id }}?hash={{ secure_hash }}`;
     const MRDB_RELEASES_URL = 'https://github.com/nihhaall/mrdb/releases';
 
+    function supportsHevcMp4() {
+      if (!video || typeof video.canPlayType !== 'function') return false;
+      return (
+        video.canPlayType('video/mp4; codecs="hvc1.1.6.L120.90"') !== '' ||
+        video.canPlayType('video/mp4; codecs="hev1.1.6.L120.90"') !== ''
+      );
+    }
+
+    function pickInitialMode() {
+      if (!PREFER_TRANSCODE) return 'orig';
+      if (VIDEO_CODEC === 'hevc' || VIDEO_CODEC === 'h265') {
+        return supportsHevcMp4() ? 'remux' : '360';
+      }
+      return 'remux';
+    }
+
     const absOriginal = window.location.origin + ORIG_REL;
     const speeds = [1, 1.25, 1.5, 2, 0.75];
     let speedIndex = 0;
-    let currentMode = PREFER_TRANSCODE ? '720' : 'orig';
+    let currentMode = pickInitialMode();
     let transcodeOffsetSec = 0;
     let totalDurationSec = SERVER_DURATION;
     let isSeeking = false;
@@ -1013,6 +1032,7 @@
     let lastTapTime = 0;
     let hasLoadedFrame = false;
     let triedTranscodeFallback = false;
+    let triedRemuxFallback = false;
     let triedOrigFallback = false;
 
     if (document.pictureInPictureEnabled) {
@@ -1106,9 +1126,17 @@
       });
     }
 
+    function modeLabel(mode) {
+      if (mode === 'orig') return 'Original';
+      if (mode === 'remux') return 'Fast HD';
+      return `${mode}p`;
+    }
+
     function buildSource(mode, offsetSec) {
       if (mode === 'orig') return ORIG_REL;
-      const base = mode === '720' ? T720_REL : (mode === '480' ? T480_REL : T360_REL);
+      const base = mode === 'remux'
+        ? REMUX_REL
+        : (mode === '720' ? T720_REL : (mode === '480' ? T480_REL : T360_REL));
       return offsetSec > 0 ? `${base}&ss=${Math.floor(offsetSec)}` : base;
     }
 
@@ -1122,8 +1150,7 @@
       updateTimelineUI(transcodeOffsetSec);
       syncPlayButtons();
 
-      const label = mode === 'orig' ? 'Original' : `${mode}p`;
-      setStatus(`Loading ${label}...`, true);
+      setStatus(`Loading ${modeLabel(mode)}...`, true);
 
       video.src = buildSource(mode, transcodeOffsetSec);
       video.playbackRate = speeds[speedIndex];
@@ -1137,10 +1164,10 @@
 
       if (mode === 'orig') {
         fallbackTimer = setTimeout(() => {
-          if (!hasLoadedFrame && currentMode === 'orig' && !triedTranscodeFallback) {
-            triedTranscodeFallback = true;
-            setStatus('Switching to 720p...', true);
-            loadMode('720', 0, true);
+          if (!hasLoadedFrame && currentMode === 'orig' && !triedRemuxFallback) {
+            triedRemuxFallback = true;
+            setStatus('Switching to Fast HD...', true);
+            loadMode('remux', 0, true);
           }
         }, 6500);
       }
@@ -1304,6 +1331,12 @@
     });
 
     video.addEventListener('loadedmetadata', () => {
+      if (currentMode === 'remux' && (video.videoWidth || 0) === 0 && !triedTranscodeFallback) {
+        triedTranscodeFallback = true;
+        setStatus('Switching to 360p for browser compatibility...', true);
+        loadMode('360', transcodeOffsetSec, !video.paused);
+        return;
+      }
       if (currentMode === 'orig' && Number.isFinite(video.duration) && video.duration > 0) {
         totalDurationSec = Math.round(video.duration);
       }
@@ -1316,8 +1349,7 @@
       clearTimeout(fallbackTimer);
       syncPlayButtons();
       updateTimelineUI();
-      const label = currentMode === 'orig' ? 'Original' : `${currentMode}p`;
-      setStatus(`Ready • ${label}`, false);
+      setStatus(`Ready • ${modeLabel(currentMode)}`, false);
     });
 
     video.addEventListener('playing', () => {
@@ -1326,8 +1358,7 @@
       clearTimeout(fallbackTimer);
       syncPlayButtons();
       showHudTemporarily();
-      const label = currentMode === 'orig' ? 'Original' : `${currentMode}p`;
-      setStatus(`Playing • ${label}`, false);
+      setStatus(`Playing • ${modeLabel(currentMode)}`, false);
     });
 
     video.addEventListener('pause', () => {
@@ -1350,20 +1381,20 @@
       clearTimeout(fallbackTimer);
       isBuffering = false;
       syncPlayButtons();
-      if (currentMode === 'orig') {
-        if (!triedTranscodeFallback) {
-          triedTranscodeFallback = true;
-          setStatus('Switching to 720p...', true);
-          loadMode('720', 0, true);
-        } else {
-          setStatus('Tap Play in MRDb or VLC below.', true);
-        }
+      if (currentMode === 'orig' && !triedRemuxFallback) {
+        triedRemuxFallback = true;
+        setStatus('Switching to Fast HD...', true);
+        loadMode('remux', 0, true);
+      } else if (currentMode === 'remux' && !triedTranscodeFallback) {
+        triedTranscodeFallback = true;
+        setStatus('Switching to 360p...', true);
+        loadMode('360', transcodeOffsetSec, true);
       } else if (!triedOrigFallback) {
         triedOrigFallback = true;
         setStatus('Trying Original...', true);
         loadMode('orig', 0, true);
       } else {
-        setStatus('Tap Play in MRDb or Download below.', true);
+        setStatus('Tap Play in MRDb or VLC below.', true);
       }
     });
 

@@ -133,27 +133,38 @@ class ByteStreamer:
                     media_session = Session(
                         client,
                         file_id.dc_id,
-                        await Auth(
-                            client, file_id.dc_id, await client.storage.test_mode()
-                        ).create(),
+                        await asyncio.wait_for(
+                            Auth(
+                                client, file_id.dc_id, await client.storage.test_mode()
+                            ).create(),
+                            timeout=12.0,
+                        ),
                         await client.storage.test_mode(),
                         is_media=True,
                     )
-                    await media_session.start()
+                    await asyncio.wait_for(media_session.start(), timeout=12.0)
 
                     try:
                         for _ in range(6):
-                            exported_auth = await client.invoke(
-                                raw.functions.auth.ExportAuthorization(
-                                    dc_id=file_id.dc_id
-                                )
+                            exported_auth = await asyncio.wait_for(
+                                client.invoke(
+                                    raw.functions.auth.ExportAuthorization(
+                                        dc_id=file_id.dc_id
+                                    )
+                                ),
+                                timeout=8.0,
                             )
 
                             try:
-                                await media_session.invoke(
-                                    raw.functions.auth.ImportAuthorization(
-                                        id=exported_auth.id, bytes=exported_auth.bytes
-                                    )
+                                await asyncio.wait_for(
+                                    media_session.invoke(
+                                        raw.functions.auth.ImportAuthorization(
+                                            id=exported_auth.id, bytes=exported_auth.bytes
+                                        ),
+                                        retries=1,
+                                        timeout=8.0,
+                                    ),
+                                    timeout=10.0,
                                 )
                                 break
                             except AuthBytesInvalid:
@@ -174,7 +185,7 @@ class ByteStreamer:
                         await client.storage.test_mode(),
                         is_media=True,
                     )
-                    await media_session.start()
+                    await asyncio.wait_for(media_session.start(), timeout=12.0)
                 logging.debug(f"Created media session for DC {file_id.dc_id}")
                 client.media_sessions[file_id.dc_id] = media_session
             else:
@@ -270,6 +281,8 @@ class ByteStreamer:
                     raw.functions.upload.GetFile(
                         location=location, offset=part_offset, limit=chunk_size
                     ),
+                    retries=1,
+                    timeout=6.0,
                 )
             )
             task.add_done_callback(self._consume_task_exception)
@@ -292,7 +305,7 @@ class ByteStreamer:
                 if task is None:
                     break
                 try:
-                    r = await task
+                    r = await asyncio.wait_for(task, timeout=10.0)
                     session_recoveries = 0
                 except (
                     TimeoutError,
@@ -302,6 +315,8 @@ class ByteStreamer:
                     TypeError,
                     ConnectionError,
                 ) as err:
+                    if not task.done():
+                        task.cancel()
                     await _drain_pending()
                     await self._invalidate_media_session(
                         client, file_id.dc_id, media_session
@@ -326,14 +341,17 @@ class ByteStreamer:
                 chunk = r.bytes
                 if not chunk:
                     break
-                elif part_count == 1:
-                    yield chunk[first_part_cut:last_part_cut]
+                if part_count == 1:
+                    sliced = chunk[first_part_cut:last_part_cut]
                 elif current_part == 1:
-                    yield chunk[first_part_cut:]
+                    sliced = chunk[first_part_cut:]
                 elif current_part == part_count:
-                    yield chunk[:last_part_cut]
+                    sliced = chunk[:last_part_cut]
                 else:
-                    yield chunk
+                    sliced = chunk
+                if not sliced:
+                    break
+                yield sliced
 
                 current_part += 1
         except (GeneratorExit, asyncio.CancelledError):
@@ -426,6 +444,7 @@ async def yield_striped_file(
         )
     ]
     acquired_indices: List[int] = [primary_index]
+    acquired_set = {primary_index}
     work_loads[primary_index] = work_loads.get(primary_index, 0) + 1
 
     secondary_init_tasks: List[asyncio.Task] = []
@@ -433,16 +452,21 @@ async def yield_striped_file(
 
     async def _attach_secondary(idx: int, streamer: ByteStreamer) -> None:
         try:
-            fid = await streamer.get_file_properties(msg_id)
+            fid = await asyncio.wait_for(
+                streamer.get_file_properties(msg_id), timeout=8.0
+            )
             loc = await streamer.get_location(fid)
-            sess = await streamer.generate_media_session(streamer.client, fid)
-            if stream_closed:
+            sess = await asyncio.wait_for(
+                streamer.generate_media_session(streamer.client, fid),
+                timeout=10.0,
+            )
+            if stream_closed or idx in acquired_set:
                 return
             w = _StripedWorker(idx, streamer, fid, loc, sess)
-            if w not in active_workers:
-                active_workers.append(w)
-                acquired_indices.append(idx)
-                work_loads[idx] = work_loads.get(idx, 0) + 1
+            active_workers.append(w)
+            acquired_set.add(idx)
+            acquired_indices.append(idx)
+            work_loads[idx] = work_loads.get(idx, 0) + 1
         except asyncio.CancelledError:
             pass
         except Exception as err:
@@ -458,11 +482,16 @@ async def yield_striped_file(
             if cached_fid is not None
             else None
         )
-        if cached_fid is not None and ByteStreamer._is_session_healthy(cached_sess):
+        if (
+            cached_fid is not None
+            and ByteStreamer._is_session_healthy(cached_sess)
+            and idx not in acquired_set
+        ):
             loc = await streamer.get_location(cached_fid)
             active_workers.append(
                 _StripedWorker(idx, streamer, cached_fid, loc, cached_sess)
             )
+            acquired_set.add(idx)
             acquired_indices.append(idx)
             work_loads[idx] = work_loads.get(idx, 0) + 1
         else:
@@ -488,6 +517,8 @@ async def yield_striped_file(
                     offset=part_offset,
                     limit=chunk_size,
                 ),
+                retries=1,
+                timeout=6.0,
             )
         )
         task.add_done_callback(ByteStreamer._consume_task_exception)
@@ -510,9 +541,11 @@ async def yield_striped_file(
 
             task, worker = entry
             try:
-                r = await task
+                r = await asyncio.wait_for(task, timeout=10.0)
                 recoveries = 0
             except Exception as err:
+                if not task.done():
+                    task.cancel()
                 await worker.streamer._invalidate_media_session(
                     worker.streamer.client,
                     worker.file_id.dc_id,
@@ -546,14 +579,17 @@ async def yield_striped_file(
             chunk = r.bytes
             if not chunk:
                 break
-            elif part_count == 1:
-                yield chunk[first_part_cut:last_part_cut]
+            if part_count == 1:
+                sliced = chunk[first_part_cut:last_part_cut]
             elif current_part == 1:
-                yield chunk[first_part_cut:]
+                sliced = chunk[first_part_cut:]
             elif current_part == part_count:
-                yield chunk[:last_part_cut]
+                sliced = chunk[:last_part_cut]
             else:
-                yield chunk
+                sliced = chunk
+            if not sliced:
+                break
+            yield sliced
 
             current_part += 1
     except (GeneratorExit, asyncio.CancelledError):

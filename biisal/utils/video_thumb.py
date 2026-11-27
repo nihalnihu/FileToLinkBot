@@ -24,11 +24,18 @@ def _resolve_ffmpeg_exe() -> Optional[str]:
 
 
 def build_local_stream_url(msg_id: int, file_name: str, file_hash: str) -> str:
+    clean_hash = (file_hash or "").strip()
+    if clean_hash:
+        return f"http://127.0.0.1:{Var.PORT}/{clean_hash}{int(msg_id)}"
     safe_name = quote_plus(str(file_name or f"video_{msg_id}.mkv"))
-    return f"http://127.0.0.1:{Var.PORT}/{int(msg_id)}/{safe_name}?hash={file_hash}"
+    return f"http://127.0.0.1:{Var.PORT}/{int(msg_id)}/{safe_name}?hash={clean_hash}"
 
 
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_VIDEO_HEADER_RE = re.compile(
+    r"^\s*Stream\s+#0:(\d+)(?:\([^)]+\))?:\s*Video:\s*([^,\s(]+)",
+    re.IGNORECASE,
+)
 _AUDIO_HEADER_RE = re.compile(
     r"^\s*Stream\s+#0:(\d+)(?:\(([^)]+)\))?:\s*Audio:\s*(.+)$",
     re.IGNORECASE,
@@ -37,10 +44,16 @@ _ANY_STREAM_RE = re.compile(r"^\s*Stream\s+#0:\d+", re.IGNORECASE)
 _META_TITLE_RE = re.compile(r"^\s*title\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
-async def probe_audio_tracks(stream_url: str, timeout: float = 20.0) -> List[Dict]:
+async def probe_media_summary(stream_url: str, timeout: float = 8.0) -> Dict:
+    """Probes duration, video codec, and audio tracks in a single ffmpeg pass."""
     ffmpeg_exe = _resolve_ffmpeg_exe()
+    summary: Dict = {
+        "duration": 0,
+        "video_codec": "",
+        "audio_tracks": [],
+    }
     if not ffmpeg_exe or not stream_url:
-        return []
+        return summary
 
     proc = await asyncio.create_subprocess_exec(
         ffmpeg_exe,
@@ -48,9 +61,9 @@ async def probe_audio_tracks(stream_url: str, timeout: float = 20.0) -> List[Dic
         "-loglevel",
         "info",
         "-analyzeduration",
-        "800000",
+        "700000",
         "-probesize",
-        "800000",
+        "700000",
         "-i",
         stream_url,
         stdin=asyncio.subprocess.DEVNULL,
@@ -62,10 +75,10 @@ async def probe_audio_tracks(stream_url: str, timeout: float = 20.0) -> List[Dic
     current_track: Optional[Dict] = None
     in_metadata = False
 
-    async def _read_streams() -> List[Dict]:
+    async def _read_summary() -> Dict:
         nonlocal current_track, in_metadata
         if proc.stderr is None:
-            return tracks
+            return summary
         while True:
             raw_line = await proc.stderr.readline()
             if not raw_line:
@@ -73,19 +86,42 @@ async def probe_audio_tracks(stream_url: str, timeout: float = 20.0) -> List[Dic
             line = raw_line.decode("utf-8", errors="ignore").rstrip("\r\n")
             if "At least one output file must be specified" in line:
                 break
+
+            if summary["duration"] <= 0:
+                m_dur = _DURATION_RE.search(line)
+                if m_dur:
+                    hrs = int(m_dur.group(1))
+                    mins = int(m_dur.group(2))
+                    secs = float(m_dur.group(3))
+                    summary["duration"] = max(
+                        0, int(round(hrs * 3600 + mins * 60 + secs))
+                    )
+
+            if not summary["video_codec"]:
+                m_vid = _VIDEO_HEADER_RE.match(line)
+                if m_vid:
+                    summary["video_codec"] = m_vid.group(2).strip().lower()
+                    current_track = None
+                    in_metadata = False
+                    continue
+
             m_audio = _AUDIO_HEADER_RE.match(line)
             if m_audio:
                 stream_idx = int(m_audio.group(1))
                 lang = (m_audio.group(2) or "").strip()
                 details = m_audio.group(3).strip()
                 parts = [p.strip() for p in details.split(",") if p.strip()]
-                codec = parts[0].split(" ")[0] if parts else ""
+                codec = parts[0].split(" ")[0].lower() if parts else ""
                 channels = ""
                 for part in parts[1:]:
                     low = part.lower()
-                    if any(k in low for k in ("stereo", "mono", "5.1", "7.1", "channels", ".")):
+                    if any(
+                        k in low for k in ("stereo", "mono", "5.1", "7.1", "channels", ".")
+                    ):
                         if "hz" not in low and "kb/s" not in low:
-                            channels = re.sub(r"\s*\(default\)\s*", "", part, flags=re.IGNORECASE).strip()
+                            channels = re.sub(
+                                r"\s*\(default\)\s*", "", part, flags=re.IGNORECASE
+                            ).strip()
                             break
                 current_track = {
                     "index": len(tracks),
@@ -116,72 +152,31 @@ async def probe_audio_tracks(stream_url: str, timeout: float = 20.0) -> List[Dic
                         current_track["title"] = m_title.group(1).strip()
                     elif not line.startswith("      "):
                         in_metadata = False
-        return tracks
+        return summary
 
     try:
-        return await asyncio.wait_for(_read_streams(), timeout=timeout)
+        return await asyncio.wait_for(_read_summary(), timeout=timeout)
     except asyncio.TimeoutError:
-        return tracks
+        return summary
     except Exception as exc:
-        logging.debug(f"Audio track probe failed: {exc}")
-        return tracks
+        logging.debug(f"Media probe failed: {exc}")
+        return summary
     finally:
         if proc.returncode is None:
             with contextlib.suppress(Exception):
                 proc.kill()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(proc.wait(), timeout=1.5)
+
+
+async def probe_audio_tracks(stream_url: str, timeout: float = 20.0) -> List[Dict]:
+    info = await probe_media_summary(stream_url, timeout=timeout)
+    return info["audio_tracks"]
 
 
 async def probe_duration_seconds(stream_url: str, timeout: float = 8.0) -> int:
-    ffmpeg_exe = _resolve_ffmpeg_exe()
-    if not ffmpeg_exe:
-        return 0
-
-    proc = await asyncio.create_subprocess_exec(
-        ffmpeg_exe,
-        "-hide_banner",
-        "-loglevel",
-        "info",
-        "-analyzeduration",
-        "1200000",
-        "-probesize",
-        "1200000",
-        "-i",
-        stream_url,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    async def _read_until_duration() -> int:
-        if proc.stderr is None:
-            return 0
-        while True:
-            raw_line = await proc.stderr.readline()
-            if not raw_line:
-                return 0
-            line = raw_line.decode("utf-8", errors="ignore")
-            m = _DURATION_RE.search(line)
-            if m:
-                hrs = int(m.group(1))
-                mins = int(m.group(2))
-                secs = float(m.group(3))
-                return max(0, int(round(hrs * 3600 + mins * 60 + secs)))
-
-    try:
-        return await asyncio.wait_for(_read_until_duration(), timeout=timeout)
-    except asyncio.TimeoutError:
-        return 0
-    except Exception as exc:
-        logging.debug(f"Duration probe failed: {exc}")
-        return 0
-    finally:
-        if proc.returncode is None:
-            with contextlib.suppress(Exception):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(proc.wait(), timeout=1.5)
+    info = await probe_media_summary(stream_url, timeout=timeout)
+    return int(info["duration"] or 0)
 
 
 async def _run_ffmpeg_frame(

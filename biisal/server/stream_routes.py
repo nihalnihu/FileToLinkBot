@@ -6,6 +6,7 @@ import re
 import time
 import math
 import asyncio
+import contextlib
 import logging
 import secrets
 import mimetypes
@@ -102,8 +103,8 @@ def _format_video_row(row: dict, base_url: str) -> dict:
         "disabled_audio_indices": disabled_audio,
         "audio_tracks": row.get("audio_tracks") or [],
         "created_at": row.get("created_at"),
-        "stream_url": f"{base_url}{msg_id}/{quoted_name}?hash={secure_hash}",
-        "watch_url": f"{base_url}watch/{msg_id}/{quoted_name}?hash={secure_hash}",
+        "stream_url": f"{base_url}{secure_hash}{msg_id}" if secure_hash else f"{base_url}{msg_id}/{quoted_name}",
+        "watch_url": f"{base_url}watch/{secure_hash}{msg_id}" if secure_hash else f"{base_url}watch/{msg_id}/{quoted_name}",
         "thumb_url": f"{base_url}api/thumb/{msg_id}" if msg_id is not None else None,
     }
 
@@ -222,14 +223,17 @@ async def get_duration_handler(request: web.Request):
         return web.json_response({"ok": False, "duration": 0})
 
 
-@routes.get(r"/transcode/{msg_id:\d+}/{quality:\d+p?}", allow_head=True)
+@routes.get(r"/transcode/{msg_id:\d+}/{quality:(?:remux|\d+p?)}", allow_head=True)
 async def transcode_video_handler(request: web.Request):
     try:
         msg_id = int(request.match_info["msg_id"])
         raw_quality = request.match_info["quality"].lower().rstrip("p")
-        target_height = int(raw_quality)
-        if target_height not in TRANSCODE_PROFILES:
-            return web.Response(status=400, text="Unsupported quality profile")
+        if raw_quality == "remux":
+            target_height = 0
+        else:
+            target_height = int(raw_quality)
+            if target_height not in TRANSCODE_PROFILES:
+                return web.Response(status=400, text="Unsupported quality profile")
 
         secure_hash = (request.rel_url.query.get("hash") or "").strip()
         ss_raw = (request.rel_url.query.get("ss") or "0").strip()
@@ -255,31 +259,66 @@ async def transcode_video_handler(request: web.Request):
                 headers={
                     "Content-Type": "video/mp4" if fmt == "mp4" else "video/x-matroska",
                     "Accept-Ranges": "none",
-                    "Cache-Control": "no-store",
+                    "Cache-Control": "no-store, no-cache, must-revalidate, private, max-age=0",
                 },
             )
 
         file_name = file_id.file_name or f"video_{msg_id}.mkv"
         audio_stream_index = 0
+        video_codec = ""
+        audio_codec = ""
+        audio_channels = ""
         try:
             row = await _video_db.videos.find_one(
                 {"msg_id": msg_id},
-                {"_id": 0, "disabled_audio_indices": 1, "audio_tracks": 1},
+                {
+                    "_id": 0,
+                    "disabled_audio_indices": 1,
+                    "audio_tracks": 1,
+                    "video_codec": 1,
+                },
             )
+            if row:
+                video_codec = str(row.get("video_codec") or "").strip().lower()
             disabled = {
                 int(x)
                 for x in ((row or {}).get("disabled_audio_indices") or [])
                 if isinstance(x, int) or str(x).isdigit()
             }
-            if disabled:
-                tracks = (row or {}).get("audio_tracks") or []
-                total = len(tracks) if tracks else 8
-                for candidate in range(total):
+            tracks = (row or {}).get("audio_tracks") or []
+            if tracks:
+                default_idx = next(
+                    (
+                        int(t.get("index", i))
+                        for i, t in enumerate(tracks)
+                        if t.get("is_default")
+                        and int(t.get("index", i)) not in disabled
+                    ),
+                    None,
+                )
+                if default_idx is not None:
+                    audio_stream_index = default_idx
+                elif disabled:
+                    for candidate in range(len(tracks)):
+                        if candidate not in disabled:
+                            audio_stream_index = candidate
+                            break
+                for i, t in enumerate(tracks):
+                    if int(t.get("index", i)) == audio_stream_index:
+                        audio_codec = str(t.get("codec") or "").strip().lower()
+                        audio_channels = str(t.get("channels") or "").strip().lower()
+                        break
+            elif disabled:
+                for candidate in range(8):
                     if candidate not in disabled:
                         audio_stream_index = candidate
                         break
         except Exception:
             audio_stream_index = 0
+        if target_height == 0 and not video_codec:
+            lower_name = file_name.lower()
+            if any(tok in lower_name for tok in ("hevc", "h265", "h.265", "x265")):
+                video_codec = "hevc"
         return await stream_transcoded_video(
             request=request,
             msg_id=msg_id,
@@ -289,6 +328,9 @@ async def transcode_video_handler(request: web.Request):
             start_seconds=start_seconds,
             output_format=fmt,
             audio_stream_index=audio_stream_index,
+            video_codec=video_codec,
+            audio_codec=audio_codec,
+            audio_channels=audio_channels,
         )
     except FIleNotFound as e:
         return web.Response(status=404, text=e.message)
@@ -648,18 +690,39 @@ async def admin_broadcast_status_handler(request: web.Request):
     return web.json_response({"ok": True, "job_id": job_id, **job})
 
 
+def _parse_stream_path_and_hash(request: web.Request, path: str):
+    clean_path = (path or "").strip().lstrip("/")
+    query_hash = (request.rel_url.query.get("hash") or "").strip()
+    if query_hash:
+        m_num = re.match(r"^(\d+)(?:/\S+)?$", clean_path) or re.search(
+            r"(\d+)(?:/\S+)?", clean_path
+        )
+        if not m_num:
+            raise AttributeError("Missing message id")
+        return int(m_num.group(1)), query_hash
+    match = re.match(r"^([a-zA-Z0-9_-]{6})(\d+)(?:/\S+)?$", clean_path)
+    if match and not clean_path.isdigit():
+        return int(match.group(2)), match.group(1)
+    m_num = re.search(r"(\d+)(?:/\S+)?", clean_path)
+    if not m_num:
+        raise AttributeError("Missing message id")
+    return int(m_num.group(1)), None
+
+
 @routes.get(r"/watch/{path:\S+}", allow_head=True)
-async def stream_handler(request: web.Request):
+async def watch_stream_handler(request: web.Request):
     try:
-        path = request.match_info["path"]
-        match = re.search(r"^([a-zA-Z0-9_-]{6})(\d+)$", path)
-        if match:
-            secure_hash = match.group(1)
-            id = int(match.group(2))
-        else:
-            id = int(re.search(r"(\d+)(?:\/\S+)?", path).group(1))
-            secure_hash = request.rel_url.query.get("hash")
-        return web.Response(text=await render_page(id, secure_hash), content_type='text/html')
+        id, secure_hash = _parse_stream_path_and_hash(
+            request, request.match_info["path"]
+        )
+        return web.Response(
+            text=await render_page(id, secure_hash),
+            content_type="text/html",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, private, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
     except InvalidHash as e:
         raise web.HTTPForbidden(text=e.message)
     except FIleNotFound as e:
@@ -673,14 +736,9 @@ async def stream_handler(request: web.Request):
 @routes.get(r"/{path:\S+}", allow_head=True)
 async def stream_handler(request: web.Request):
     try:
-        path = request.match_info["path"]
-        match = re.search(r"^([a-zA-Z0-9_-]{6})(\d+)$", path)
-        if match:
-            secure_hash = match.group(1)
-            id = int(match.group(2))
-        else:
-            id = int(re.search(r"(\d+)(?:\/\S+)?", path).group(1))
-            secure_hash = request.rel_url.query.get("hash")
+        id, secure_hash = _parse_stream_path_and_hash(
+            request, request.match_info["path"]
+        )
         return await media_streamer(request, id, secure_hash)
     except InvalidHash as e:
         raise web.HTTPForbidden(text=e.message)
@@ -780,6 +838,11 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
         "Content-Length": str(req_length),
         "Content-Disposition": f'{disposition}; filename="{file_name}"',
         "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store, no-cache, must-revalidate, private, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "Vary": "Range",
+        "X-Accel-Buffering": "no",
     }
     if range_header:
         headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
@@ -814,8 +877,27 @@ async def media_streamer(request: web.Request, id: int, secure_hash: str):
             file_id, index, offset, first_part_cut, last_part_cut, part_count, chunk_size
         )
 
-    return web.Response(
+    resp = web.StreamResponse(
         status=206 if range_header else 200,
-        body=body,
         headers=headers,
     )
+    await resp.prepare(request)
+    try:
+        async for chunk in body:
+            if request.transport is None or request.transport.is_closing():
+                break
+            if chunk:
+                await resp.write(chunk)
+        if request.transport is not None and not request.transport.is_closing():
+            await resp.write_eof()
+    except (
+        asyncio.CancelledError,
+        ConnectionResetError,
+        BrokenPipeError,
+        ConnectionAbortedError,
+    ):
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            await body.aclose()
+    return resp

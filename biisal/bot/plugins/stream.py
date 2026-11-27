@@ -142,8 +142,8 @@ async def private_receive_handler(c: Client, m: Message):
         file_hash = get_hash(log_msg)
         file_size = get_media_file_size(m)
         stream_code = f"MRDB-{log_msg.id}-{file_hash.upper()}"
-        stream_link = f"{Var.URL}watch/{str(log_msg.id)}/{quote_plus(file_name)}?hash={file_hash}"
-        online_link = f"{Var.URL}{str(log_msg.id)}/{quote_plus(file_name)}?hash={file_hash}"
+        stream_link = f"{Var.URL}watch/{file_hash}{log_msg.id}"
+        online_link = f"{Var.URL}{file_hash}{log_msg.id}"
 
         is_owner = bool(m.from_user and (m.from_user.id in Var.OWNER_ID))
         is_video, mime_type = _is_video_media(m)
@@ -220,8 +220,9 @@ async def channel_receive_handler(bot, broadcast):
         return
     try:
         log_msg = await broadcast.forward(chat_id=Var.BIN_CHANNEL)
-        stream_link = f"{Var.URL}watch/{str(log_msg.id)}/{quote_plus(get_name(log_msg))}?hash={get_hash(log_msg)}"
-        online_link = f"{Var.URL}{str(log_msg.id)}/{quote_plus(get_name(log_msg))}?hash={get_hash(log_msg)}"
+        file_hash = get_hash(log_msg)
+        stream_link = f"{Var.URL}watch/{file_hash}{log_msg.id}"
+        online_link = f"{Var.URL}{file_hash}{log_msg.id}"
         await log_msg.reply_text(
             text=f"**Channel Name:** `{broadcast.chat.title}`\n**CHANNEL ID:** `{broadcast.chat.id}`\n**Rᴇǫᴜᴇsᴛ ᴜʀʟ:** {stream_link}",
             quote=True

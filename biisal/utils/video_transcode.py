@@ -53,13 +53,17 @@ async def stream_transcoded_video(
     start_seconds: int = 0,
     output_format: str = "matroska",
     audio_stream_index: int = 0,
+    video_codec: str = "",
+    audio_codec: str = "",
+    audio_channels: str = "",
 ) -> web.StreamResponse:
     ffmpeg_exe = _resolve_ffmpeg_exe()
     if not ffmpeg_exe:
         return web.Response(status=501, text="ffmpeg unavailable for transcoding")
 
-    profile = TRANSCODE_PROFILES.get(target_height)
-    if not profile:
+    is_remux = int(target_height or 0) == 0
+    profile = None if is_remux else TRANSCODE_PROFILES.get(target_height)
+    if not is_remux and not profile:
         return web.Response(status=400, text="Unsupported quality profile")
 
     source_url = build_local_stream_url(msg_id, file_name, secure_hash)
@@ -71,10 +75,10 @@ async def stream_transcoded_video(
         "-y",
         "-loglevel",
         "error",
-        "-analyzeduration",
-        "1500000",
         "-probesize",
-        "1500000",
+        "500000",
+        "-analyzeduration",
+        "500000",
         "-reconnect",
         "1",
         "-reconnect_streamed",
@@ -93,38 +97,57 @@ async def stream_transcoded_video(
             "0:v:0",
             "-map",
             f"0:a:{audio_idx}?",
-            "-vf",
-            f"scale=-2:{target_height}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-crf",
-            profile["crf"],
-            "-maxrate",
-            profile["maxrate"],
-            "-bufsize",
-            profile["bufsize"],
-            "-pix_fmt",
-            "yuv420p",
-            "-g",
-            "48",
-            "-keyint_min",
-            "48",
-            "-threads",
-            "2",
-            "-c:a",
-            "aac",
-            "-b:a",
-            profile["audio_bitrate"],
-            "-ac",
-            "2",
-            "-flush_packets",
-            "1",
         ]
     )
+
+    if is_remux:
+        cmd.extend(["-c:v", "copy"])
+        if (video_codec or "").strip().lower() in ("hevc", "h265", "h.265", "x265"):
+            cmd.extend(["-tag:v", "hvc1"])
+        audio_bitrate = "112k"
+    else:
+        cmd.extend(
+            [
+                "-vf",
+                f"scale=-2:{target_height}:flags=fast_bilinear",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-tune",
+                "zerolatency",
+                "-crf",
+                profile["crf"],
+                "-maxrate",
+                profile["maxrate"],
+                "-bufsize",
+                profile["bufsize"],
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "30",
+                "-keyint_min",
+                "30",
+                "-threads",
+                "0",
+            ]
+        )
+        audio_bitrate = profile["audio_bitrate"]
+
+    acodec_low = (audio_codec or "").strip().lower()
+    ach_low = (audio_channels or "").strip().lower()
+    can_copy_aac = (
+        is_remux
+        and acodec_low == "aac"
+        and "5.1" not in ach_low
+        and "7.1" not in ach_low
+    )
+    if can_copy_aac:
+        cmd.extend(["-c:a", "copy"])
+    else:
+        cmd.extend(["-c:a", "aac", "-b:a", audio_bitrate, "-ac", "2"])
+
+    cmd.extend(["-flush_packets", "1"])
     if is_mp4:
         cmd.extend(
             [
@@ -133,20 +156,25 @@ async def stream_transcoded_video(
                 "-movflags",
                 "frag_keyframe+empty_moov+default_base_moof",
                 "-frag_duration",
-                "1000000",
+                "500000",
+                "-min_frag_duration",
+                "200000",
                 "pipe:1",
             ]
         )
     else:
         cmd.extend(["-f", "matroska", "pipe:1"])
 
+    mode_label = "remux" if is_remux else f"transcoded-{target_height}p"
     resp = web.StreamResponse(
         status=200,
         headers={
             "Content-Type": "video/mp4" if is_mp4 else "video/x-matroska",
             "Accept-Ranges": "none",
-            "Cache-Control": "no-store",
-            "X-Stream-Mode": f"transcoded-{target_height}p-{'mp4' if is_mp4 else 'mkv'}",
+            "Cache-Control": "no-store, no-cache, must-revalidate, private, max-age=0",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Stream-Mode": f"{mode_label}-{'mp4' if is_mp4 else 'mkv'}",
         },
     )
 
@@ -167,17 +195,21 @@ async def stream_transcoded_video(
                 return web.Response(status=500, text="Missing ffmpeg output pipe")
 
             while True:
+                if request.transport is None or request.transport.is_closing():
+                    break
                 chunk = await stdout.read(32768)
                 if not chunk:
+                    break
+                if request.transport is None or request.transport.is_closing():
                     break
                 if not prepared:
                     await resp.prepare(request)
                     prepared = True
                 await resp.write(chunk)
 
-            if prepared:
+            if prepared and request.transport is not None and not request.transport.is_closing():
                 await resp.write_eof()
-            else:
+            elif not prepared:
                 return web.Response(status=502, text="Transcode produced no data")
             return resp
         except (
