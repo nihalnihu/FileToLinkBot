@@ -90,10 +90,14 @@ async def start_services():
         print('                        app runnng on =>> {}'.format(Var.FQDN))
     print('---------------------------------------------------------------------------------------------------------')
     print(LOGO)
-    try: 
-        await StreamBot.send_message(chat_id=Var.OWNER_ID[0] ,text='<b>ʙᴏᴛ ʀᴇsᴛᴀʀᴛᴇᴅ...😎</b>')
-    except Exception as e:
-        print(f'got this error to send restart msg to owner : {e}')
+    for owner_id in dict.fromkeys(Var.OWNER_ID or []):
+        try:
+            await StreamBot.send_message(
+                chat_id=int(owner_id),
+                text='<b>ʙᴏᴛ ʀᴇsᴛᴀʀᴛᴇᴅ...😎</b>',
+            )
+        except Exception as e:
+            print(f'got this error to send restart msg to owner {owner_id}: {e}')
     await idle()
 
 if __name__ == '__main__':
