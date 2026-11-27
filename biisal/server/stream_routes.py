@@ -14,6 +14,7 @@ from urllib.parse import quote_plus
 from aiohttp import web
 from aiohttp.http_exceptions import BadStatusLine
 from pyrogram.errors import FloodWait
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from biisal.bot import multi_clients, work_loads, StreamBot
 from biisal.server.exceptions import FIleNotFound, InvalidHash
 from biisal import StartTime, __version__
@@ -611,19 +612,28 @@ async def admin_unban_user_handler(request: web.Request):
 _broadcast_jobs = {}
 
 
-async def _run_broadcast_job(job_id: str, text: str, user_ids: list):
+async def _run_broadcast_job(
+    job_id: str,
+    text: str,
+    user_ids: list,
+    reply_markup: InlineKeyboardMarkup = None,
+):
     job = _broadcast_jobs.get(job_id)
     if not job:
         return
     try:
         for uid in user_ids:
             try:
-                await StreamBot.send_message(chat_id=uid, text=text)
+                await StreamBot.send_message(
+                    chat_id=uid, text=text, reply_markup=reply_markup
+                )
                 job["sent"] += 1
             except FloodWait as fw:
                 await asyncio.sleep(min(int(fw.value), 30))
                 try:
-                    await StreamBot.send_message(chat_id=uid, text=text)
+                    await StreamBot.send_message(
+                        chat_id=uid, text=text, reply_markup=reply_markup
+                    )
                     job["sent"] += 1
                 except Exception:
                     job["failed"] += 1
@@ -636,6 +646,37 @@ async def _run_broadcast_job(job_id: str, text: str, user_ids: list):
         job["done"] = True
 
 
+def _parse_broadcast_markup(payload: dict):
+    raw_buttons = payload.get("buttons")
+    candidates = []
+    if isinstance(raw_buttons, list):
+        candidates.extend(raw_buttons)
+    elif payload.get("button_text") and payload.get("button_url"):
+        candidates.append(
+            {
+                "text": payload.get("button_text"),
+                "url": payload.get("button_url"),
+            }
+        )
+    rows = []
+    for entry in candidates[:8]:
+        if not isinstance(entry, dict):
+            continue
+        label = str(entry.get("text") or "").strip()
+        url = str(entry.get("url") or "").strip()
+        if not label or not url:
+            continue
+        low_url = url.lower()
+        if not (
+            low_url.startswith("https://")
+            or low_url.startswith("http://")
+            or low_url.startswith("tg://")
+        ):
+            continue
+        rows.append([InlineKeyboardButton(label[:64], url=url)])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
 @routes.post("/api/admin/broadcast")
 async def admin_broadcast_handler(request: web.Request):
     if not _is_owner_request(request):
@@ -645,6 +686,7 @@ async def admin_broadcast_handler(request: web.Request):
         text = str(payload.get("message") or "").strip()
         if not text:
             return web.json_response({"ok": False, "error": "Message cannot be empty"}, status=400)
+        reply_markup = _parse_broadcast_markup(payload) if isinstance(payload, dict) else None
 
         users_cursor = await _video_db.get_all_users()
         user_ids = []
@@ -661,7 +703,11 @@ async def admin_broadcast_handler(request: web.Request):
             "done": len(user_ids) == 0,
         }
         if user_ids:
-            asyncio.create_task(_run_broadcast_job(job_id, text, user_ids))
+            asyncio.create_task(
+                _run_broadcast_job(
+                    job_id, text, user_ids, reply_markup=reply_markup
+                )
+            )
 
         return web.json_response(
             {
