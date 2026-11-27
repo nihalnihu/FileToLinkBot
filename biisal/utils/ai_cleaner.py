@@ -334,12 +334,100 @@ async def _lookup_imdb_title_year(
     return (imdb_title, imdb_year) if imdb_title else None
 
 
+def _tokenize_title(value: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", (value or "").lower())
+
+
+def _select_best_tmdb_result(
+    results: List[Dict[str, Any]],
+    title: str,
+    year: Optional[int] = None,
+    expected_language: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Pick the best TMDB search result, rejecting zero-overlap unrelated titles."""
+    query_tokens = _tokenize_title(title)
+    query_token_set = set(query_tokens)
+    norm_query = " ".join(query_tokens)
+    expected_langs = {
+        part.strip().lower()
+        for part in re.split(r"[,/|]+", expected_language or "")
+        if part.strip()
+    }
+
+    best: Optional[Dict[str, Any]] = None
+    best_score = float("-inf")
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        cand_names = [
+            str(item.get("title") or item.get("name") or "").strip(),
+            str(item.get("original_title") or item.get("original_name") or "").strip(),
+        ]
+        cand_names = [name for name in cand_names if name]
+        if not cand_names:
+            continue
+
+        best_title_score = float("-inf")
+        has_overlap = not query_token_set
+        for cand_name in cand_names:
+            cand_tokens = _tokenize_title(cand_name)
+            cand_token_set = set(cand_tokens)
+            overlap = len(query_token_set & cand_token_set)
+            if query_token_set and overlap == 0:
+                continue
+            has_overlap = True
+            norm_cand = " ".join(cand_tokens)
+            score = overlap * 6.0 - abs(len(cand_tokens) - len(query_tokens))
+            if norm_cand == norm_query and norm_query:
+                score += 24.0
+            if cand_token_set == query_token_set and query_token_set:
+                score += 16.0
+            if score > best_title_score:
+                best_title_score = score
+
+        if not has_overlap:
+            continue
+
+        rd = str(item.get("release_date") or item.get("first_air_date") or "").strip()
+        cand_year = _parse_opt_int(rd[:4], 1900, 2100) if len(rd) >= 4 else None
+        year_score = 0.0
+        if year is not None:
+            if cand_year is None:
+                year_score = 1.0
+            elif cand_year == year:
+                year_score = 10.0
+            elif abs(cand_year - year) == 1:
+                year_score = 4.0
+            else:
+                year_score = -4.0
+
+        lang_score = 0.0
+        if expected_langs:
+            raw_lang = str(item.get("original_language") or "").strip().lower()
+            mapped_lang = (_LANG_CODE_MAP.get(raw_lang) or raw_lang).lower()
+            if mapped_lang and mapped_lang in expected_langs:
+                lang_score = 8.0 if len(expected_langs) == 1 else 5.0
+
+        try:
+            pop = min(float(item.get("popularity") or 0.0), 50.0) * 0.05
+        except Exception:
+            pop = 0.0
+
+        total_score = best_title_score + year_score + lang_score + pop
+        if total_score > best_score:
+            best_score = total_score
+            best = item
+
+    return best
+
+
 async def _lookup_tmdb_info(
     session: aiohttp.ClientSession,
     title: str,
     year: Optional[int],
     is_series: bool,
     tmdb_api_key: Optional[str] = None,
+    expected_language: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     key = (
         (tmdb_api_key or "").strip()
@@ -348,14 +436,14 @@ async def _lookup_tmdb_info(
     if not key or not title.strip():
         return None
 
-    async def _search(endpoint: str) -> List[Dict[str, Any]]:
+    async def _search(endpoint: str, search_year: Optional[int]) -> List[Dict[str, Any]]:
         url = (
             f"https://api.themoviedb.org/3/search/{endpoint}"
             f"?api_key={quote(key)}&query={quote(title.strip())}&page=1"
         )
-        if year is not None:
+        if search_year is not None:
             param = "first_air_date_year" if endpoint == "tv" else "year"
-            url += f"&{param}={year}"
+            url += f"&{param}={search_year}"
         try:
             async with session.get(url) as resp:
                 if resp.status != 200:
@@ -365,25 +453,23 @@ async def _lookup_tmdb_info(
         except Exception:
             return []
 
-    results = await _search("tv" if is_series else "movie")
-    if not results and year is not None:
-        # Retry without year filter in case filename year differed by +/-1 year.
-        saved_year = year
-        year = None
-        results = await _search("tv" if is_series else "movie")
-        year = saved_year
-    if not results:
-        results = await _search("movie" if is_series else "tv")
-    if not results:
-        return None
+    primary_ep = "tv" if is_series else "movie"
+    secondary_ep = "movie" if is_series else "tv"
 
-    best = results[0]
-    if year is not None:
-        for item in results:
-            rd = str(item.get("release_date") or item.get("first_air_date") or "").strip()
-            if len(rd) >= 4 and rd[:4].isdigit() and abs(int(rd[:4]) - year) <= 1:
-                best = item
-                break
+    results = await _search(primary_ep, year)
+    best = _select_best_tmdb_result(results, title, year, expected_language)
+    if not best and year is not None:
+        # Retry without year filter if filename year differed by +/-1 or TMDB lacks release_date.
+        results = await _search(primary_ep, None)
+        best = _select_best_tmdb_result(results, title, year, expected_language)
+    if not best:
+        results = await _search(secondary_ep, year)
+        best = _select_best_tmdb_result(results, title, year, expected_language)
+        if not best and year is not None:
+            results = await _search(secondary_ep, None)
+            best = _select_best_tmdb_result(results, title, year, expected_language)
+    if not best:
+        return None
 
     tmdb_title = str(best.get("title") or best.get("name") or "").strip()
     rd = str(best.get("release_date") or best.get("first_air_date") or "").strip()
@@ -547,6 +633,7 @@ async def auto_clean_filename_with_ai(
             year,
             is_series,
             tmdb_api_key=tmdb_api_key,
+            expected_language=language or original_language,
         )
         if tmdb_info:
             if tmdb_info.get("title"):
