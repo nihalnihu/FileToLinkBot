@@ -425,34 +425,44 @@ async def _fetch_original_language_from_ai(
         return None
 
 
-def _local_fallback_parse(raw_file_name: str) -> Optional[Dict[str, Any]]:
+def _local_fallback_parse(
+    raw_file_name: str,
+    caption: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    combined_ref = f"{raw_file_name} {(caption or '').strip()}".strip()
     name = re.sub(r"\.[a-z0-9]{2,4}$", "", raw_file_name.strip(), flags=re.IGNORECASE)
     name = re.sub(r"^\[[^\]]{1,12}\]\s*", "", name)
     name = re.sub(r"@[a-z0-9_]+", " ", name, flags=re.IGNORECASE)
     name = re.sub(r"www\.[a-z0-9\.\-]+", " ", name, flags=re.IGNORECASE)
 
     season = episode = None
-    m_se = re.search(r"\bS(\d{1,2})\s*[-._ ]?\s*E(\d{1,3})\b", name, flags=re.IGNORECASE)
+    m_se = re.search(r"\bS(\d{1,2})\s*[-._ ]?\s*E(\d{1,3})\b", combined_ref, flags=re.IGNORECASE)
     if m_se:
         season, episode = int(m_se.group(1)), int(m_se.group(2))
-        name = name[: m_se.start()] + " " + name[m_se.end() :]
+        name = re.sub(r"\bS\d{1,2}\s*[-._ ]?\s*E\d{1,3}\b", " ", name, flags=re.IGNORECASE)
     is_series = season is not None or episode is not None
 
     year = None
-    m_yr = re.search(r"\b(19\d{2}|20\d{2})\b", name)
+    m_yr = re.search(r"\b(19\d{2}|20\d{2})\b", name) or re.search(
+        r"\b(19\d{2}|20\d{2})\b", combined_ref
+    )
     if m_yr:
         year = int(m_yr.group(1))
-        name = name[: m_yr.start()] + " " + name[m_yr.end() :]
+        name = re.sub(rf"\b{year}\b", " ", name, count=1)
 
     quality = None
-    m_q = re.search(r"\b(2160p|4K|1080p|720p|480p|360p|HDRip)\b", name, flags=re.IGNORECASE)
+    m_q = re.search(
+        r"\b(2160p|4K|1080p|720p|480p|360p|HDRip)\b",
+        combined_ref,
+        flags=re.IGNORECASE,
+    )
     if m_q:
         rq = m_q.group(1).lower()
         quality = "4K" if rq in ("2160p", "4k") else ("HDRip" if rq == "hdrip" else rq)
 
     langs: List[str] = []
     seen = set()
-    for tok in re.findall(r"[a-zA-Z]{3,12}", name):
+    for tok in re.findall(r"[a-zA-Z]{3,12}", combined_ref):
         mapped = _LANG_CODE_MAP.get(tok.lower())
         if mapped and mapped not in seen:
             seen.add(mapped)
@@ -464,7 +474,7 @@ def _local_fallback_parse(raw_file_name: str) -> Optional[Dict[str, Any]]:
         name,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r"[._\-\[\]()]+", " ", cleaned)
+    cleaned = re.sub(r"[._\-\+\[\]()]+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         return None
@@ -488,12 +498,16 @@ async def auto_clean_filename_with_ai(
     gemini_api_key_override: Optional[str] = None,
     prompt_preset: Optional[str] = None,
     tmdb_api_key: Optional[str] = None,
+    caption: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     raw = (file_name or "").strip()
     if not raw:
         return None
 
+    clean_caption = (caption or "").strip()
     user_prompt = f"Raw filename: {raw}"
+    if clean_caption and clean_caption != raw:
+        user_prompt += f"\nTelegram caption (reference if filename is truncated): {clean_caption[:400]}"
     if existing_title and existing_title.strip() and existing_title.strip() != raw:
         user_prompt += f"\nExisting title in editor: {existing_title.strip()}"
 
@@ -503,7 +517,7 @@ async def auto_clean_filename_with_ai(
 
     timeout = aiohttp.ClientTimeout(total=25)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # 1. AI analyzes the raw filename (falls back locally if AI quota/402 occurs)
+        # 1. AI analyzes the raw filename + caption reference (falls back locally if AI quota/402 occurs)
         ai_res = await _call_ai_json(
             session,
             sys_prompt,
@@ -511,7 +525,9 @@ async def auto_clean_filename_with_ai(
             gemini_api_key_override=gemini_api_key_override,
         )
         raw_ai, ai_provider = ai_res if ai_res else (None, "Bot Local")
-        parsed = (parse_ai_analysis_json(raw_ai) if raw_ai else None) or _local_fallback_parse(raw)
+        parsed = (parse_ai_analysis_json(raw_ai) if raw_ai else None) or _local_fallback_parse(
+            raw, caption=clean_caption
+        )
         if not parsed:
             return None
 

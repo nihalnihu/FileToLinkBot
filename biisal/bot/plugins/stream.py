@@ -23,7 +23,12 @@ from biisal.utils.ai_cleaner import auto_clean_filename_with_ai
 db = Database(Var.DATABASE_URL, Var.name)
 
 
-async def _auto_clean_video_metadata(msg_id: int, file_name: str, file_hash: str):
+async def _auto_clean_video_metadata(
+    msg_id: int,
+    file_name: str,
+    file_hash: str,
+    caption: Optional[str] = None,
+):
     if os.environ.get("AUTO_AI_RENAME", "true").strip().lower() in ("0", "false", "no"):
         return
     try:
@@ -31,6 +36,7 @@ async def _auto_clean_video_metadata(msg_id: int, file_name: str, file_hash: str
             file_name,
             msg_id=msg_id,
             file_hash=file_hash,
+            caption=caption,
         )
         if updates:
             await db.update_video_metadata(str(msg_id), updates)
@@ -79,7 +85,8 @@ async def _background_index_and_clean(
     if not is_video:
         return
 
-    title, tmdb_id = _parse_video_caption(caption, file_name)
+    clean_caption = (caption or "").strip()
+    title, tmdb_id = _parse_video_caption(clean_caption, file_name)
     try:
         await db.add_video(
             {
@@ -90,12 +97,15 @@ async def _background_index_and_clean(
                 "file_size": int(file_size or 0),
                 "mime_type": mime_type,
                 "title": title,
+                "caption": clean_caption,
                 "tmdb_id": tmdb_id,
                 "uploaded_by_owner": is_owner,
                 "created_at": datetime.datetime.utcnow().isoformat() + "Z",
             }
         )
-        await _auto_clean_video_metadata(int(log_msg.id), file_name, file_hash)
+        await _auto_clean_video_metadata(
+            int(log_msg.id), file_name, file_hash, caption=clean_caption
+        )
         await _capture_and_store_thumbnail(int(log_msg.id), file_name, file_hash)
     except Exception as db_err:
         print(f"Failed to index video for app stream: {db_err}")

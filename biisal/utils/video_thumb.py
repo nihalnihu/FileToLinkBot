@@ -73,7 +73,7 @@ async def probe_media_summary(stream_url: str, timeout: float = 8.0) -> Dict:
         stderr=asyncio.subprocess.PIPE,
     )
 
-    tracks: List[Dict] = []
+    tracks: List[Dict] = summary["audio_tracks"]
     current_track: Optional[Dict] = None
     in_metadata = False
 

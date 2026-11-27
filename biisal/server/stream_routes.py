@@ -509,6 +509,7 @@ async def admin_ai_clean_video_handler(request: web.Request):
             gemini_api_key_override=payload.get("gemini_api_key"),
             prompt_preset=payload.get("prompt_preset"),
             tmdb_api_key=payload.get("tmdb_api_key"),
+            caption=payload.get("caption") or row.get("caption"),
         )
         if not result:
             return web.json_response({"ok": False, "error": "AI clean failed"}, status=502)
