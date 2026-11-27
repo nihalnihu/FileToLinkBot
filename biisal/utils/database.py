@@ -309,6 +309,14 @@ class Database:
             return res.deleted_count > 0
         return False
 
+    async def clear_videos(self) -> dict:
+        res_videos = await self.videos.delete_many({})
+        res_thumbs = await self.thumbnails.delete_many({})
+        return {
+            "deleted_videos": int(res_videos.deleted_count),
+            "deleted_thumbnails": int(res_thumbs.deleted_count),
+        }
+
     async def total_banned_count(self):
         return await self.bannedList.count_documents({})
 

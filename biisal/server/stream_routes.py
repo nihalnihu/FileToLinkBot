@@ -382,14 +382,15 @@ async def list_videos_handler(request: web.Request):
             if row.get("msg_id") is not None and row.get("hash")
         ]
         clamped_limit = max(1, min(limit, 100))
-        return web.json_response(
-            {
-                "ok": True,
-                "count": len(items),
-                "has_more": len(rows) >= clamped_limit,
-                "videos": items,
-            }
-        )
+        payload = {
+            "ok": True,
+            "count": len(items),
+            "has_more": len(rows) >= clamped_limit,
+            "videos": items,
+        }
+        if _is_owner_request(request):
+            payload["total"] = await _video_db.total_videos_count()
+        return web.json_response(payload)
     except Exception as e:
         logging.critical(e.with_traceback(None))
         return web.json_response({"ok": False, "error": str(e)}, status=500)
@@ -411,6 +412,18 @@ async def delete_video_handler(request: web.Request):
             if row and row.get("msg_id") is not None:
                 deleted = await _video_db.delete_video(msg_id=int(row["msg_id"]))
         return web.json_response({"ok": True, "deleted": bool(deleted)})
+    except Exception as e:
+        logging.critical(e.with_traceback(None))
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@routes.delete("/api/admin/videos")
+async def admin_clear_videos_handler(request: web.Request):
+    if not _is_owner_request(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=403)
+    try:
+        result = await _video_db.clear_videos()
+        return web.json_response({"ok": True, **result})
     except Exception as e:
         logging.critical(e.with_traceback(None))
         return web.json_response({"ok": False, "error": str(e)}, status=500)
